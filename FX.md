@@ -1,10 +1,13 @@
-# osTicket Business Logic & Operations
+# Nodeticket Business Logic & Operations
 
-This document describes the business logic, operations, and invariants of the osTicket help desk system.
+This document describes the business logic, operations, and invariants of the Nodeticket help desk system, which is backward compatible with osTicket.
 
 ## Overview
 
-osTicket is a PHP-based help desk ticketing system with the following core capabilities:
+Nodeticket is a **Node.js-based** help desk ticketing system designed to be backward compatible with osTicket (v1.8+). It supports both **MySQL** (primary) and **PostgreSQL** databases.
+
+### Core Capabilities
+
 - Multi-channel ticket ingestion (Web, Email, Phone, API)
 - Department and team-based routing
 - SLA management with business hours support
@@ -12,6 +15,15 @@ osTicket is a PHP-based help desk ticketing system with the following core capab
 - Dynamic forms and custom fields
 - Knowledge base (FAQ)
 - Email notifications and auto-responses
+
+### Technology Stack
+
+| Component | Technology |
+|-----------|------------|
+| Runtime | Node.js |
+| Primary Database | MySQL |
+| Secondary Database | PostgreSQL |
+| Compatibility | osTicket v1.8+ |
 
 ---
 
@@ -41,7 +53,8 @@ The central entity representing a support request.
 | Thread | 1:1 | Communication thread |
 | Lock | 1:1 | Edit lock (when being edited) |
 
-**Source File**: `include/class.ticket.php` (~4800 lines)
+**osTicket Source**: `include/class.ticket.php`
+**Nodeticket Source**: `src/models/ticket.js`
 
 ---
 
@@ -61,7 +74,8 @@ End-user/client who creates or is associated with tickets.
 | Organization | N:1 | Parent organization |
 | Ticket | 1:N | Owned tickets |
 
-**Source File**: `include/class.user.php`
+**osTicket Source**: `include/class.user.php`
+**Nodeticket Source**: `src/models/user.js`
 
 ---
 
@@ -83,7 +97,8 @@ Internal support agent/administrator.
 | StaffDeptAccess | 1:N | Extended department access |
 | Team | N:M | Team memberships |
 
-**Source File**: `include/class.staff.php`
+**osTicket Source**: `include/class.staff.php`
+**Nodeticket Source**: `src/models/staff.js`
 
 ---
 
@@ -100,7 +115,8 @@ Company or group that users belong to.
 - Domain-based auto-association for new users
 - Custom data via dynamic forms
 
-**Source File**: `include/class.organization.php`
+**osTicket Source**: `include/class.organization.php`
+**Nodeticket Source**: `src/models/organization.js`
 
 ---
 
@@ -122,7 +138,8 @@ Organizational unit for ticket routing and management.
 | `FLAG_DISABLE_AUTO_CLAIM` | Prevent claim-on-reply |
 | `FLAG_DISABLE_REOPEN_AUTO_ASSIGN` | Prevent auto-assign on reopen |
 
-**Source File**: `include/class.dept.php`
+**osTicket Source**: `include/class.dept.php`
+**Nodeticket Source**: `src/models/department.js`
 
 ---
 
@@ -140,7 +157,8 @@ Group of staff members for collective assignment.
 | Staff | N:M | Team members |
 | Staff (lead) | N:1 | Team lead |
 
-**Source File**: `include/class.team.php`
+**osTicket Source**: `include/class.team.php`
+**Nodeticket Source**: `src/models/team.js`
 
 ---
 
@@ -151,7 +169,8 @@ Permission set for staff access control.
 - `name`: Role name
 - `permissions`: JSON-encoded permission set
 
-**Source File**: `include/class.role.php`
+**osTicket Source**: `include/class.role.php`
+**Nodeticket Source**: `src/models/role.js`
 
 ---
 
@@ -172,7 +191,8 @@ Communication container for ticket/task entries.
 | ThreadCollaborator | 1:N | CC'd users |
 | ThreadReferral | 1:N | Cross-references |
 
-**Source File**: `include/class.thread.php` (~2500 lines)
+**osTicket Source**: `include/class.thread.php`
+**Nodeticket Source**: `src/models/thread.js`
 
 ---
 
@@ -186,7 +206,8 @@ Individual message within a thread.
 | Response | `R` | From staff |
 | Note | `N` | Internal only |
 
-**Source File**: `include/class.thread.php`
+**osTicket Source**: `include/class.thread.php`
+**Nodeticket Source**: `src/models/threadEntry.js`
 
 ---
 
@@ -207,7 +228,8 @@ Internal work item, optionally linked to a ticket.
 | Department | N:1 | Owning department |
 | Thread | 1:1 | Communication thread |
 
-**Source File**: `include/class.task.php`
+**osTicket Source**: `include/class.task.php`
+**Nodeticket Source**: `src/models/task.js`
 
 ---
 
@@ -226,7 +248,8 @@ Defines response time expectations.
 | `FLAG_NOALERTS` | 4 | Suppress overdue alerts |
 | `FLAG_TRANSIENT` | 8 | Temporary SLA |
 
-**Source File**: `include/class.sla.php`
+**osTicket Source**: `include/class.sla.php`
+**Nodeticket Source**: `src/models/sla.js`
 
 ---
 
@@ -245,7 +268,8 @@ Ticket categorization and routing configuration.
 - Default assignee (staff or team)
 - Associated forms
 
-**Source File**: `include/class.topic.php`
+**osTicket Source**: `include/class.topic.php`
+**Nodeticket Source**: `src/models/helpTopic.js`
 
 ---
 
@@ -270,7 +294,8 @@ Email/ticket routing rules.
 | `match` | Regex match |
 | `not_match` | Regex not match |
 
-**Source File**: `include/class.filter.php`
+**osTicket Source**: `include/class.filter.php`
+**Nodeticket Source**: `src/models/filter.js`
 
 ---
 
@@ -280,7 +305,12 @@ Email/ticket routing rules.
 
 #### 1. Ticket Creation
 
-**Method**: `Ticket::create($vars, &$errors, $origin, $autorespond, $alert)`
+**Method**: `Ticket.create(vars, origin, options)`
+
+```javascript
+// Nodeticket signature
+async Ticket.create(vars, origin = 'Web', { autorespond = true, alert = true } = {})
+```
 
 **Flow**:
 ```
@@ -336,9 +366,12 @@ Email/ticket routing rules.
 #### 2. Ticket Assignment
 
 **Methods**:
-- `Ticket::assignToStaff($staff, $note, $alert)`
-- `Ticket::assignToTeam($team, $note, $alert)`
-- `Ticket::assign($form)` - Form-based assignment
+```javascript
+// Nodeticket signatures
+async ticket.assignToStaff(staffId, note, { alert = true } = {})
+async ticket.assignToTeam(teamId, note, { alert = true } = {})
+async ticket.assign(formData)  // Form-based assignment
+```
 
 **Flow**:
 ```
@@ -373,7 +406,7 @@ Email/ticket routing rules.
 
 #### 3. Ticket Transfer
 
-**Method**: `Ticket::transfer($dept_id, $comments, $alert)`
+**Method**: `ticket.transfer(deptId, comments, { alert = true } = {})`
 
 **Flow**:
 ```
@@ -414,7 +447,7 @@ Email/ticket routing rules.
 
 #### 4. Ticket Status Changes
 
-**Method**: `Ticket::setStatus($status, $comments, &$errors, $set_closing_agent)`
+**Method**: `ticket.setStatus(status, comments, { setClosingAgent = true } = {})`
 
 **States**:
 | State | Description | Transitions |
@@ -473,7 +506,7 @@ Email/ticket routing rules.
 
 #### 5. Ticket Merging
 
-**Method**: `Ticket::merge($tickets, $form)`
+**Method**: `ticket.merge(ticketIds, formData)`
 
 **Flow**:
 ```
@@ -510,7 +543,7 @@ Email/ticket routing rules.
 
 #### 6. Reply Posting
 
-**Method**: `Ticket::postReply($vars, &$errors, $alert, $claim)`
+**Method**: `ticket.postReply(vars, { alert = true, claim = false } = {})`
 
 **Flow**:
 ```
@@ -558,9 +591,12 @@ Email/ticket routing rules.
 #### User Creation
 
 **Methods**:
-- `UserModel::create($vars)` - Direct creation
-- `User::fromVars($vars)` - From form data
-- `User::fromEmail($email)` - From email lookup
+```javascript
+// Nodeticket signatures
+async User.create(vars)          // Direct creation
+async User.fromVars(vars)        // From form data
+async User.fromEmail(email)      // From email lookup
+```
 
 **Flow**:
 ```
@@ -739,7 +775,7 @@ Email/ticket routing rules.
 
 #### Due Date Calculation
 
-**Method**: `SLA::addGracePeriod($datetime, $format)`
+**Method**: `sla.addGracePeriod(datetime, format)`
 
 **Flow**:
 ```
@@ -769,7 +805,7 @@ For each hour to add:
 
 #### Overdue Processing
 
-**Method**: `Ticket::checkOverdue()` (static, via cron)
+**Method**: `Ticket.checkOverdue()` (static, via scheduled job)
 
 **Flow**:
 ```
@@ -796,7 +832,7 @@ For each hour to add:
 
 #### Filter Execution
 
-**Method**: `TicketFilter::apply($ticket)`
+**Method**: `TicketFilter.apply(ticket)`
 
 **Flow**:
 ```
@@ -938,7 +974,7 @@ For each hour to add:
 
 ### Permission Resolution
 
-**Method**: `Ticket::checkStaffPerm($staff, $perm)`
+**Method**: `ticket.checkStaffPerm(staff, perm)`
 
 **Resolution Order**:
 ```
@@ -961,7 +997,7 @@ For each hour to add:
 
 ### User Access Control
 
-**Method**: `Ticket::checkUserAccess($user)`
+**Method**: `ticket.checkUserAccess(user)`
 
 **Access Levels**:
 ```
@@ -984,7 +1020,9 @@ For each hour to add:
 
 ---
 
-## Scheduled Tasks (Cron)
+## Scheduled Tasks
+
+Nodeticket uses Node.js scheduling libraries (e.g., `node-cron`, `agenda`, or `bull`) for background tasks.
 
 ### Task Registry
 
@@ -992,18 +1030,42 @@ For each hour to add:
 |------|-----------|-------------|
 | MailFetcher | 5 min | Fetch and process incoming emails |
 | TicketMonitor | 5 min | Check overdue tickets, cleanup locks |
-| PurgeLogs | Daily (probabilistic) | Clean old system logs |
+| PurgeLogs | Daily | Clean old system logs |
 | PurgeDrafts | Each run | Remove stale drafts |
 | CleanOrphanedFiles | 1/10 runs | Delete unlinked attachments |
 | CleanExpiredSessions | Each run | Remove expired sessions |
 | CleanPwResets | Each run | Remove expired password tokens |
-| MaybeOptimizeTables | Weekly (probabilistic) | Database table optimization |
+| MaybeOptimizeTables | Weekly | Database table optimization |
 
-### Cron Execution
+### Scheduler Implementation
 
-**Methods**:
-- API endpoint with authentication (`api/cron.php`)
-- CLI execution (`LocalCronApiController::call()`)
+```javascript
+// Example using node-cron
+const cron = require('node-cron');
+
+// Fetch mail every 5 minutes
+cron.schedule('*/5 * * * *', async () => {
+  await MailFetcher.run();
+});
+
+// Check overdue tickets every 5 minutes
+cron.schedule('*/5 * * * *', async () => {
+  await Ticket.checkOverdue();
+});
+```
+
+### Execution Methods
+
+**API Endpoint**: `POST /api/cron`
+```javascript
+// Route handler
+router.post('/cron', apiKeyAuth, async (req, res) => {
+  await scheduler.runAll();
+  res.json({ success: true });
+});
+```
+
+**CLI Execution**: `node scripts/cron.js`
 
 **Requirements**:
 - Valid API key with `can_exec_cron` permission
@@ -1013,15 +1075,27 @@ For each hour to add:
 
 ## API
 
+Nodeticket provides a RESTful API compatible with osTicket's API, plus additional endpoints.
+
 ### Ticket API
 
-**Endpoint**: `api/http.php/tickets.json`
+**Base Path**: `/api/v1`
 
-**Operations**:
+**Endpoints**:
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | /tickets.json | Create ticket |
-| POST | /tickets.xml | Create ticket (XML) |
+| GET | /tickets | List tickets |
+| GET | /tickets/:id | Get ticket details |
+| POST | /tickets | Create ticket |
+| PUT | /tickets/:id | Update ticket |
+| POST | /tickets/:id/reply | Post reply |
+| POST | /tickets/:id/note | Add internal note |
+
+**osTicket Compatibility Endpoints**:
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | /tickets.json | Create ticket (legacy) |
+| POST | /tickets.xml | Create ticket (XML format) |
 | POST | /tickets.email | Create from email |
 
 **Request Format** (JSON):
@@ -1044,11 +1118,25 @@ For each hour to add:
 
 **Authentication**:
 - API key in `X-API-Key` header
-- IP whitelist validation
+- Bearer token in `Authorization` header (JWT)
+- IP whitelist validation (optional)
+
+**Example (Node.js)**:
+```javascript
+// Express route handler
+router.post('/tickets', apiKeyAuth, async (req, res) => {
+  try {
+    const ticket = await Ticket.create(req.body, 'API');
+    res.status(201).json({ ticketId: ticket.id, number: ticket.number });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+```
 
 **Invariants**:
 - API key must be active
-- IP must match configured address
+- IP must match configured address (if configured)
 - `can_create_tickets` permission required
 
 ---
@@ -1165,25 +1253,44 @@ All significant actions are logged to `thread_event`:
 
 ## Extension Points
 
-### Signals (Events)
+### Events (EventEmitter)
 
-osTicket uses a signal system for extensibility:
+Nodeticket uses Node.js EventEmitter for extensibility:
 
-| Signal | Description |
-|--------|-------------|
-| `cron` | Cron job execution |
-| `ticket.created` | Ticket created |
-| `ticket.closed` | Ticket closed |
-| `ticket.assigned` | Ticket assigned |
-| `mail.received` | Email received |
-| `model.created` | Any model created |
-| `model.updated` | Any model updated |
-| `model.deleted` | Any model deleted |
+| Event | Description |
+|-------|-------------|
+| `cron:run` | Scheduled job execution |
+| `ticket:created` | Ticket created |
+| `ticket:closed` | Ticket closed |
+| `ticket:assigned` | Ticket assigned |
+| `ticket:transferred` | Ticket transferred |
+| `mail:received` | Email received |
+| `model:created` | Any model created |
+| `model:updated` | Any model updated |
+| `model:deleted` | Any model deleted |
 
 **Usage**:
-```php
-Signal::connect('ticket.created', function($ticket) {
-    // Custom logic
+```javascript
+const { events } = require('./lib/events');
+
+// Subscribe to ticket creation
+events.on('ticket:created', async (ticket) => {
+  // Custom logic
+  console.log(`New ticket: ${ticket.number}`);
+});
+
+// Emit an event
+events.emit('ticket:created', ticket);
+```
+
+### Middleware
+
+Express middleware for extending functionality:
+```javascript
+// Custom middleware
+app.use('/api', (req, res, next) => {
+  // Custom logic before request processing
+  next();
 });
 ```
 
@@ -1192,17 +1299,56 @@ Signal::connect('ticket.created', function($ticket) {
 Plugins can extend functionality via:
 - Custom filter actions
 - Custom form field types
-- Custom authentication backends
+- Custom authentication backends (passport.js strategies)
 - Custom storage backends
-- Signal handlers
+- Event handlers
 
-**Source**: `include/class.plugin.php`
+**Plugin Structure**:
+```javascript
+// plugins/my-plugin/index.js
+module.exports = {
+  name: 'my-plugin',
+  version: '1.0.0',
+
+  async init(app, events) {
+    // Register event handlers
+    events.on('ticket:created', this.onTicketCreated);
+
+    // Add routes
+    app.get('/api/my-plugin/status', this.statusHandler);
+  },
+
+  async onTicketCreated(ticket) {
+    // Handle ticket creation
+  }
+};
+```
+
+**Source**: `src/lib/plugin.js`
 
 ---
 
 ## Configuration
 
-### System Configuration
+Nodeticket uses environment variables and the database `config` table for configuration.
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `NODE_ENV` | Environment (development/production) | development |
+| `PORT` | Server port | 3000 |
+| `DB_DIALECT` | Database type (mysql/postgres) | mysql |
+| `DB_HOST` | Database host | localhost |
+| `DB_PORT` | Database port | 3306 (MySQL) / 5432 (PostgreSQL) |
+| `DB_NAME` | Database name | osticket |
+| `DB_USER` | Database username | - |
+| `DB_PASSWORD` | Database password | - |
+| `TABLE_PREFIX` | Table prefix | ost_ |
+| `SESSION_SECRET` | Session encryption key | - |
+| `JWT_SECRET` | JWT signing key | - |
+
+### System Configuration (Database)
 
 Key configuration items in `config` table:
 
@@ -1244,16 +1390,37 @@ Each email account has:
 
 ### Validation Errors
 
-Form and operation errors returned via `$errors` array:
-- Field-specific errors by field name
-- General errors in `err` key
+Form and operation errors returned as structured objects:
+```javascript
+// Error response format
+{
+  success: false,
+  errors: {
+    email: 'Invalid email address',
+    subject: 'Subject is required'
+  },
+  message: 'Validation failed'
+}
+```
 
 ### System Errors
 
-Logged to `syslog` table:
+Logged to `syslog` table and console:
 - Debug, Warning, Error levels
 - Logger identification
 - IP address tracking
+- Stack traces (in development)
+
+```javascript
+// Logging example
+const logger = require('./lib/logger');
+
+logger.error('Ticket creation failed', {
+  error: err.message,
+  stack: err.stack,
+  userId: user.id
+});
+```
 
 ### Email Errors
 
@@ -1262,3 +1429,19 @@ Email account errors tracked:
 - Last error message
 - Last error timestamp
 - Auto-disable after threshold
+
+### Error Middleware (Express)
+
+```javascript
+// Global error handler
+app.use((err, req, res, next) => {
+  logger.error(err.message, { stack: err.stack });
+
+  res.status(err.status || 500).json({
+    success: false,
+    message: process.env.NODE_ENV === 'production'
+      ? 'Internal server error'
+      : err.message
+  });
+});
+```
