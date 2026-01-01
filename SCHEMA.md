@@ -1,29 +1,66 @@
-# osTicket Database Schema
+# Nodeticket Database Schema
 
-This document provides a comprehensive reference for the osTicket database schema.
+This document provides a comprehensive reference for the Nodeticket database schema, which is backward compatible with osTicket.
 
 ## Overview
 
-- **Database Engine**: MySQL (primary supported database)
+- **Platform**: Node.js
+- **Compatibility**: osTicket v1.8+ (backward compatible)
+- **Primary Database**: MySQL
+- **Secondary Database**: PostgreSQL
 - **Default Charset**: UTF-8
-- **Table Prefix**: Configurable via `%TABLE_PREFIX%` (default: `ost_`)
+- **Table Prefix**: Configurable via `TABLE_PREFIX` environment variable (default: `ost_`)
 - **Total Tables**: 66
-- **Schema Location**: `setup/inc/streams/core/install-mysql.sql`
-- **Migrations**: `include/upgrader/streams/core/` (99 migration files)
 
-## Database Variants
+## Database Support
 
-> **Note**: osTicket currently supports **MySQL only**. The schema uses MySQL-specific syntax including:
-> - `AUTO_INCREMENT` for auto-incrementing columns
-> - `ENGINE=MyISAM` / `ENGINE=InnoDB` specifications
-> - MySQL-specific collations (`utf8_unicode_ci`, `ascii_general_ci`, `ascii_bin`)
+Nodeticket supports both MySQL and PostgreSQL while maintaining full backward compatibility with existing osTicket installations.
 
-### Engine Selection
+### MySQL (Primary)
+
+The original osTicket schema uses MySQL-specific syntax:
+- `AUTO_INCREMENT` for auto-incrementing columns
+- `ENGINE=MyISAM` / `ENGINE=InnoDB` specifications
+- MySQL-specific collations (`utf8_unicode_ci`, `ascii_general_ci`, `ascii_bin`)
+
+#### Engine Selection (MySQL)
 
 | Engine | Tables | Use Case |
 |--------|--------|----------|
 | MyISAM | Most tables | Default, optimized for reads |
 | InnoDB | `sequence`, `thread_referral`, `event` | Transaction support, row-level locking |
+
+### PostgreSQL (Secondary)
+
+For PostgreSQL deployments, Nodeticket provides equivalent functionality:
+- `SERIAL` / `BIGSERIAL` for auto-incrementing columns
+- Standard PostgreSQL table storage
+- Unicode collations (`en_US.UTF-8` or equivalent)
+
+#### PostgreSQL Equivalents
+
+| MySQL Feature | PostgreSQL Equivalent |
+|---------------|----------------------|
+| `AUTO_INCREMENT` | `SERIAL` / `BIGSERIAL` |
+| `ENGINE=InnoDB` | Default (all tables transactional) |
+| `ENGINE=MyISAM` | N/A (use standard tables) |
+| `TINYINT(1)` | `BOOLEAN` or `SMALLINT` |
+| `DATETIME` | `TIMESTAMP` |
+| `BLOB` / `LONGBLOB` | `BYTEA` |
+| `TEXT` | `TEXT` |
+| `ENUM(...)` | `VARCHAR` with CHECK constraint or custom type |
+| `utf8_unicode_ci` | `COLLATE "en_US.utf8"` |
+
+### Database Abstraction
+
+Nodeticket uses a database abstraction layer to normalize differences:
+
+```javascript
+// Example: Auto-increment handling
+const id = db.dialect === 'postgres'
+  ? 'SERIAL PRIMARY KEY'
+  : 'INT(11) UNSIGNED AUTO_INCREMENT PRIMARY KEY';
+```
 
 ---
 
@@ -1443,11 +1480,22 @@ Form ─────────────────┬── FormField (1:N
 ## Migration System
 
 ### Overview
-- **Location**: `include/upgrader/streams/core/`
+
+Nodeticket supports the original osTicket migration format and introduces a Node.js-based migration system.
+
+**osTicket Compatibility**:
+- **Location**: `include/upgrader/streams/core/` (original osTicket path)
 - **File Types**: `.patch.sql` (additions), `.cleanup.sql` (cleanup)
 - **Tracking**: `config` table with `schema_signature` key
 
+**Nodeticket Native Migrations**:
+- **Location**: `migrations/`
+- **File Types**: `.js` (JavaScript migration files)
+- **Tracking**: `config` table with `schema_signature` key
+
 ### Migration File Format
+
+#### osTicket SQL Format (backward compatible)
 ```sql
 /**
  * @signature <sha1_hash>
@@ -1462,6 +1510,30 @@ ALTER TABLE ...
 UPDATE %TABLE_PREFIX%config
 SET value = '<new_signature>'
 WHERE key = 'schema_signature' AND namespace = 'core';
+```
+
+#### Nodeticket JavaScript Format
+```javascript
+// migrations/20240101_add_new_column.js
+module.exports = {
+  version: '2.0.0',
+  signature: '<sha1_hash>',
+
+  async up(db) {
+    // MySQL
+    if (db.dialect === 'mysql') {
+      await db.query(`ALTER TABLE ${db.prefix}ticket ADD COLUMN custom_field VARCHAR(255)`);
+    }
+    // PostgreSQL
+    else if (db.dialect === 'postgres') {
+      await db.query(`ALTER TABLE ${db.prefix}ticket ADD COLUMN custom_field VARCHAR(255)`);
+    }
+  },
+
+  async down(db) {
+    await db.query(`ALTER TABLE ${db.prefix}ticket DROP COLUMN custom_field`);
+  }
+};
 ```
 
 ---
@@ -1482,15 +1554,49 @@ WHERE key = 'schema_signature' AND namespace = 'core';
 ## Notes
 
 ### Character Sets
+
+**MySQL**:
 - Default: `utf8`
 - Binary fields: `ascii_bin` (passwords, signatures)
 - Case-insensitive: `ascii_general_ci` (file types, session IDs)
 - Unicode collation: `utf8_unicode_ci` (user agents)
 
+**PostgreSQL**:
+- Default: `UTF8`
+- Binary fields: Use `BYTEA` type
+- Case-insensitive: Use `CITEXT` extension or `LOWER()` comparisons
+- Unicode collation: Database-level collation
+
 ### Timestamps
+
 - All major tables have `created` and `updated` columns
-- Some tables use `TIMESTAMP` with `ON UPDATE CURRENT_TIMESTAMP`
+- MySQL: Some tables use `TIMESTAMP` with `ON UPDATE CURRENT_TIMESTAMP`
+- PostgreSQL: Use triggers for automatic `updated` timestamp updates
 
 ### Soft Deletes
+
 - Uses `flags` field for deletion markers
 - Hard deletes available for certain statuses (deleted state)
+
+### Node.js Considerations
+
+**Connection Pooling**:
+- Use connection pools for both MySQL and PostgreSQL
+- Recommended libraries: `mysql2` (MySQL), `pg` (PostgreSQL)
+
+**Query Building**:
+- Use parameterized queries to prevent SQL injection
+- Consider using query builders like Knex.js for cross-database compatibility
+
+**Date/Time Handling**:
+- Store timestamps in UTC
+- Convert to local timezone in application layer
+- Use `moment.js` or `date-fns` for consistent date manipulation
+
+### osTicket Backward Compatibility
+
+Nodeticket maintains compatibility with existing osTicket installations:
+- Connects to existing osTicket v1.8+ databases
+- Reads and writes using the same table structure
+- Supports existing session management
+- Maintains password hash compatibility
