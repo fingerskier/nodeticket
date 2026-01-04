@@ -1,0 +1,2127 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Nodeticket API",
+    "description": "RESTful API for Nodeticket help desk system. Backward compatible with osTicket v1.8+.",
+    "version": "1.0.0",
+    "contact": {
+      "name": "Nodeticket Support"
+    },
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "/api/v1",
+      "description": "API v1"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Tickets",
+      "description": "Ticket management operations"
+    },
+    {
+      "name": "Users",
+      "description": "User management operations"
+    },
+    {
+      "name": "Staff",
+      "description": "Staff/agent operations"
+    },
+    {
+      "name": "Departments",
+      "description": "Department operations"
+    },
+    {
+      "name": "Teams",
+      "description": "Team operations"
+    },
+    {
+      "name": "Organizations",
+      "description": "Organization operations"
+    },
+    {
+      "name": "Help Topics",
+      "description": "Help topic operations"
+    },
+    {
+      "name": "SLA",
+      "description": "Service Level Agreement operations"
+    },
+    {
+      "name": "FAQ",
+      "description": "Knowledge base operations"
+    },
+    {
+      "name": "Tasks",
+      "description": "Task management operations"
+    },
+    {
+      "name": "Authentication",
+      "description": "Authentication operations"
+    },
+    {
+      "name": "System",
+      "description": "System and configuration operations"
+    }
+  ],
+  "paths": {
+    "/auth/login": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Authenticate user or staff",
+        "operationId": "login",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful authentication",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "End user session",
+        "operationId": "logout",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "responses": {
+          "200": {
+            "description": "Successfully logged out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tickets": {
+      "get": {
+        "tags": ["Tickets"],
+        "summary": "List tickets",
+        "operationId": "listTickets",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {"$ref": "#/components/parameters/PageParam"},
+          {"$ref": "#/components/parameters/LimitParam"},
+          {"$ref": "#/components/parameters/SortParam"},
+          {"$ref": "#/components/parameters/OrderParam"},
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Filter by status (open, closed, archived)",
+            "schema": {
+              "type": "string",
+              "enum": ["open", "closed", "archived"]
+            }
+          },
+          {
+            "name": "dept_id",
+            "in": "query",
+            "description": "Filter by department ID",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "staff_id",
+            "in": "query",
+            "description": "Filter by assigned staff ID",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "Filter by ticket owner ID",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "topic_id",
+            "in": "query",
+            "description": "Filter by help topic ID",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "priority_id",
+            "in": "query",
+            "description": "Filter by priority ID",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "isoverdue",
+            "in": "query",
+            "description": "Filter overdue tickets",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Search in ticket number, subject, or content",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of tickets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TicketList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      },
+      "post": {
+        "tags": ["Tickets"],
+        "summary": "Create a new ticket",
+        "operationId": "createTicket",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TicketCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Ticket created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ticket"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/tickets/{id}": {
+      "get": {
+        "tags": ["Tickets"],
+        "summary": "Get ticket details",
+        "operationId": "getTicket",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Ticket ID or number",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ticket details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TicketDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "put": {
+        "tags": ["Tickets"],
+        "summary": "Update ticket",
+        "operationId": "updateTicket",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TicketUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ticket updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ticket"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tickets/{id}/thread": {
+      "get": {
+        "tags": ["Tickets"],
+        "summary": "Get ticket thread entries",
+        "operationId": "getTicketThread",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {"$ref": "#/components/parameters/PageParam"},
+          {"$ref": "#/components/parameters/LimitParam"}
+        ],
+        "responses": {
+          "200": {
+            "description": "Thread entries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadEntryList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tickets/{id}/events": {
+      "get": {
+        "tags": ["Tickets"],
+        "summary": "Get ticket event history",
+        "operationId": "getTicketEvents",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadEventList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tickets/{id}/reply": {
+      "post": {
+        "tags": ["Tickets"],
+        "summary": "Post reply to ticket",
+        "operationId": "replyToTicket",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TicketReply"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Reply posted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadEntry"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tickets/{id}/note": {
+      "post": {
+        "tags": ["Tickets"],
+        "summary": "Add internal note to ticket",
+        "operationId": "addTicketNote",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TicketNote"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Note added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadEntry"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tickets.json": {
+      "post": {
+        "tags": ["Tickets"],
+        "summary": "Create ticket (osTicket compatibility)",
+        "operationId": "createTicketLegacy",
+        "security": [{"apiKey": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TicketCreateLegacy"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Ticket created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ticketId": {"type": "integer"},
+                    "number": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "List users",
+        "operationId": "listUsers",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {"$ref": "#/components/parameters/PageParam"},
+          {"$ref": "#/components/parameters/LimitParam"},
+          {
+            "name": "org_id",
+            "in": "query",
+            "description": "Filter by organization ID",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Search by name or email",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{id}": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "Get user details",
+        "operationId": "getUser",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/users/{id}/tickets": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "Get user's tickets",
+        "operationId": "getUserTickets",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {"$ref": "#/components/parameters/PageParam"},
+          {"$ref": "#/components/parameters/LimitParam"}
+        ],
+        "responses": {
+          "200": {
+            "description": "User's tickets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TicketList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/staff": {
+      "get": {
+        "tags": ["Staff"],
+        "summary": "List staff members",
+        "operationId": "listStaff",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {"$ref": "#/components/parameters/PageParam"},
+          {"$ref": "#/components/parameters/LimitParam"},
+          {
+            "name": "dept_id",
+            "in": "query",
+            "description": "Filter by department ID",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "isactive",
+            "in": "query",
+            "description": "Filter by active status",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of staff",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaffList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/staff/{id}": {
+      "get": {
+        "tags": ["Staff"],
+        "summary": "Get staff member details",
+        "operationId": "getStaff",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Staff details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaffDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/departments": {
+      "get": {
+        "tags": ["Departments"],
+        "summary": "List departments",
+        "operationId": "listDepartments",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {"$ref": "#/components/parameters/PageParam"},
+          {"$ref": "#/components/parameters/LimitParam"},
+          {
+            "name": "ispublic",
+            "in": "query",
+            "description": "Filter by public visibility",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of departments",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DepartmentList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/departments/{id}": {
+      "get": {
+        "tags": ["Departments"],
+        "summary": "Get department details",
+        "operationId": "getDepartment",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Department details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DepartmentDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/teams": {
+      "get": {
+        "tags": ["Teams"],
+        "summary": "List teams",
+        "operationId": "listTeams",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {"$ref": "#/components/parameters/PageParam"},
+          {"$ref": "#/components/parameters/LimitParam"}
+        ],
+        "responses": {
+          "200": {
+            "description": "List of teams",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/teams/{id}": {
+      "get": {
+        "tags": ["Teams"],
+        "summary": "Get team details",
+        "operationId": "getTeam",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Team details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/organizations": {
+      "get": {
+        "tags": ["Organizations"],
+        "summary": "List organizations",
+        "operationId": "listOrganizations",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {"$ref": "#/components/parameters/PageParam"},
+          {"$ref": "#/components/parameters/LimitParam"},
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Search by name or domain",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of organizations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/organizations/{id}": {
+      "get": {
+        "tags": ["Organizations"],
+        "summary": "Get organization details",
+        "operationId": "getOrganization",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Organization details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/organizations/{id}/users": {
+      "get": {
+        "tags": ["Organizations"],
+        "summary": "Get organization's users",
+        "operationId": "getOrganizationUsers",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Organization users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/topics": {
+      "get": {
+        "tags": ["Help Topics"],
+        "summary": "List help topics",
+        "operationId": "listTopics",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {"$ref": "#/components/parameters/PageParam"},
+          {"$ref": "#/components/parameters/LimitParam"},
+          {
+            "name": "ispublic",
+            "in": "query",
+            "description": "Filter by public visibility",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of help topics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopicList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/topics/{id}": {
+      "get": {
+        "tags": ["Help Topics"],
+        "summary": "Get help topic details",
+        "operationId": "getTopic",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Topic details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Topic"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sla": {
+      "get": {
+        "tags": ["SLA"],
+        "summary": "List SLA plans",
+        "operationId": "listSLA",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "responses": {
+          "200": {
+            "description": "List of SLA plans",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SLAList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sla/{id}": {
+      "get": {
+        "tags": ["SLA"],
+        "summary": "Get SLA plan details",
+        "operationId": "getSLA",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SLA details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SLA"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/priorities": {
+      "get": {
+        "tags": ["System"],
+        "summary": "List ticket priorities",
+        "operationId": "listPriorities",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "responses": {
+          "200": {
+            "description": "List of priorities",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PriorityList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/statuses": {
+      "get": {
+        "tags": ["System"],
+        "summary": "List ticket statuses",
+        "operationId": "listStatuses",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "responses": {
+          "200": {
+            "description": "List of statuses",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/faq": {
+      "get": {
+        "tags": ["FAQ"],
+        "summary": "List FAQ articles",
+        "operationId": "listFAQ",
+        "parameters": [
+          {"$ref": "#/components/parameters/PageParam"},
+          {"$ref": "#/components/parameters/LimitParam"},
+          {
+            "name": "category_id",
+            "in": "query",
+            "description": "Filter by category ID",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Search in question, answer, keywords",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of FAQ articles",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FAQList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/faq/{id}": {
+      "get": {
+        "tags": ["FAQ"],
+        "summary": "Get FAQ article",
+        "operationId": "getFAQ",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "FAQ article",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FAQ"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/faq/categories": {
+      "get": {
+        "tags": ["FAQ"],
+        "summary": "List FAQ categories",
+        "operationId": "listFAQCategories",
+        "responses": {
+          "200": {
+            "description": "List of FAQ categories",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FAQCategoryList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "List tasks",
+        "operationId": "listTasks",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {"$ref": "#/components/parameters/PageParam"},
+          {"$ref": "#/components/parameters/LimitParam"},
+          {
+            "name": "staff_id",
+            "in": "query",
+            "description": "Filter by assigned staff ID",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "dept_id",
+            "in": "query",
+            "description": "Filter by department ID",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of tasks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks/{id}": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "Get task details",
+        "operationId": "getTask",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cron": {
+      "post": {
+        "tags": ["System"],
+        "summary": "Execute scheduled tasks",
+        "operationId": "runCron",
+        "security": [{"apiKey": []}],
+        "responses": {
+          "200": {
+            "description": "Cron executed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/system/config": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Get system configuration",
+        "operationId": "getConfig",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "responses": {
+          "200": {
+            "description": "System configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemConfig"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/system/stats": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Get system statistics",
+        "operationId": "getStats",
+        "security": [{"bearerAuth": []}, {"apiKey": []}],
+        "responses": {
+          "200": {
+            "description": "System statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemStats"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      },
+      "apiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key"
+      }
+    },
+    "parameters": {
+      "PageParam": {
+        "name": "page",
+        "in": "query",
+        "description": "Page number",
+        "schema": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 1
+        }
+      },
+      "LimitParam": {
+        "name": "limit",
+        "in": "query",
+        "description": "Items per page",
+        "schema": {
+          "type": "integer",
+          "default": 25,
+          "minimum": 1,
+          "maximum": 100
+        }
+      },
+      "SortParam": {
+        "name": "sort",
+        "in": "query",
+        "description": "Sort field",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "OrderParam": {
+        "name": "order",
+        "in": "query",
+        "description": "Sort order",
+        "schema": {
+          "type": "string",
+          "enum": ["asc", "desc"],
+          "default": "desc"
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Authentication required",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Permission denied",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "Invalid request",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ValidationError"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": false
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "ValidationError": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": false
+          },
+          "message": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "SuccessResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": true
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "Pagination": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "totalPages": {
+            "type": "integer"
+          }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": ["username", "password"],
+        "properties": {
+          "username": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string",
+            "format": "password"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["staff", "user"],
+            "default": "staff"
+          }
+        }
+      },
+      "AuthResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "token": {
+            "type": "string"
+          },
+          "user": {
+            "type": "object",
+            "properties": {
+              "id": {"type": "integer"},
+              "username": {"type": "string"},
+              "name": {"type": "string"},
+              "email": {"type": "string"},
+              "isAdmin": {"type": "boolean"},
+              "type": {"type": "string", "enum": ["staff", "user"]}
+            }
+          }
+        }
+      },
+      "Ticket": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {"type": "integer"},
+          "number": {"type": "string"},
+          "user_id": {"type": "integer"},
+          "status_id": {"type": "integer"},
+          "dept_id": {"type": "integer"},
+          "sla_id": {"type": "integer"},
+          "topic_id": {"type": "integer"},
+          "staff_id": {"type": "integer"},
+          "team_id": {"type": "integer"},
+          "source": {"type": "string", "enum": ["Web", "Email", "Phone", "API", "Other"]},
+          "isoverdue": {"type": "boolean"},
+          "isanswered": {"type": "boolean"},
+          "duedate": {"type": "string", "format": "date-time"},
+          "est_duedate": {"type": "string", "format": "date-time"},
+          "closed": {"type": "string", "format": "date-time"},
+          "created": {"type": "string", "format": "date-time"},
+          "updated": {"type": "string", "format": "date-time"}
+        }
+      },
+      "TicketDetail": {
+        "allOf": [
+          {"$ref": "#/components/schemas/Ticket"},
+          {
+            "type": "object",
+            "properties": {
+              "subject": {"type": "string"},
+              "user": {"$ref": "#/components/schemas/UserSummary"},
+              "staff": {"$ref": "#/components/schemas/StaffSummary"},
+              "team": {"$ref": "#/components/schemas/TeamSummary"},
+              "department": {"$ref": "#/components/schemas/DepartmentSummary"},
+              "topic": {"$ref": "#/components/schemas/TopicSummary"},
+              "status": {"$ref": "#/components/schemas/Status"},
+              "priority": {"$ref": "#/components/schemas/Priority"},
+              "sla": {"$ref": "#/components/schemas/SLASummary"},
+              "thread": {
+                "type": "object",
+                "properties": {
+                  "id": {"type": "integer"},
+                  "lastresponse": {"type": "string", "format": "date-time"},
+                  "lastmessage": {"type": "string", "format": "date-time"}
+                }
+              },
+              "collaborators": {
+                "type": "array",
+                "items": {"$ref": "#/components/schemas/Collaborator"}
+              }
+            }
+          }
+        ]
+      },
+      "TicketList": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/TicketDetail"}
+          },
+          "pagination": {"$ref": "#/components/schemas/Pagination"}
+        }
+      },
+      "TicketCreate": {
+        "type": "object",
+        "required": ["email", "name", "subject", "message"],
+        "properties": {
+          "email": {"type": "string", "format": "email"},
+          "name": {"type": "string"},
+          "subject": {"type": "string"},
+          "message": {"type": "string"},
+          "topicId": {"type": "integer"},
+          "deptId": {"type": "integer"},
+          "priorityId": {"type": "integer"},
+          "source": {"type": "string", "enum": ["Web", "Email", "Phone", "API", "Other"]},
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {"type": "string"},
+                "type": {"type": "string"},
+                "data": {"type": "string", "format": "base64"}
+              }
+            }
+          }
+        }
+      },
+      "TicketCreateLegacy": {
+        "type": "object",
+        "required": ["email", "name", "subject", "message"],
+        "properties": {
+          "email": {"type": "string", "format": "email"},
+          "name": {"type": "string"},
+          "subject": {"type": "string"},
+          "message": {"type": "string"},
+          "topicId": {"type": "integer"},
+          "phone": {"type": "string"},
+          "ip": {"type": "string"},
+          "attachments": {"type": "array"}
+        }
+      },
+      "TicketUpdate": {
+        "type": "object",
+        "properties": {
+          "status_id": {"type": "integer"},
+          "staff_id": {"type": "integer"},
+          "team_id": {"type": "integer"},
+          "dept_id": {"type": "integer"},
+          "topic_id": {"type": "integer"},
+          "priority_id": {"type": "integer"},
+          "sla_id": {"type": "integer"},
+          "duedate": {"type": "string", "format": "date-time"}
+        }
+      },
+      "TicketReply": {
+        "type": "object",
+        "required": ["body"],
+        "properties": {
+          "body": {"type": "string"},
+          "status_id": {"type": "integer"},
+          "signature": {"type": "string", "enum": ["none", "mine", "dept"]},
+          "attachments": {"type": "array"}
+        }
+      },
+      "TicketNote": {
+        "type": "object",
+        "required": ["body"],
+        "properties": {
+          "body": {"type": "string"},
+          "title": {"type": "string"}
+        }
+      },
+      "ThreadEntry": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "thread_id": {"type": "integer"},
+          "staff_id": {"type": "integer"},
+          "user_id": {"type": "integer"},
+          "type": {"type": "string", "enum": ["M", "R", "N"]},
+          "poster": {"type": "string"},
+          "title": {"type": "string"},
+          "body": {"type": "string"},
+          "format": {"type": "string"},
+          "source": {"type": "string"},
+          "created": {"type": "string", "format": "date-time"},
+          "attachments": {"type": "array"}
+        }
+      },
+      "ThreadEntryList": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/ThreadEntry"}
+          },
+          "pagination": {"$ref": "#/components/schemas/Pagination"}
+        }
+      },
+      "ThreadEvent": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "thread_id": {"type": "integer"},
+          "event_id": {"type": "integer"},
+          "event_name": {"type": "string"},
+          "staff_id": {"type": "integer"},
+          "username": {"type": "string"},
+          "data": {"type": "object"},
+          "timestamp": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ThreadEventList": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/ThreadEvent"}
+          }
+        }
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "org_id": {"type": "integer"},
+          "name": {"type": "string"},
+          "email": {"type": "string"},
+          "status": {"type": "integer"},
+          "created": {"type": "string", "format": "date-time"},
+          "updated": {"type": "string", "format": "date-time"}
+        }
+      },
+      "UserSummary": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "name": {"type": "string"},
+          "email": {"type": "string"}
+        }
+      },
+      "UserDetail": {
+        "allOf": [
+          {"$ref": "#/components/schemas/User"},
+          {
+            "type": "object",
+            "properties": {
+              "organization": {"$ref": "#/components/schemas/OrganizationSummary"},
+              "emails": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {"type": "integer"},
+                    "address": {"type": "string"},
+                    "flags": {"type": "integer"}
+                  }
+                }
+              },
+              "ticketCount": {"type": "integer"}
+            }
+          }
+        ]
+      },
+      "UserList": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/User"}
+          },
+          "pagination": {"$ref": "#/components/schemas/Pagination"}
+        }
+      },
+      "Staff": {
+        "type": "object",
+        "properties": {
+          "staff_id": {"type": "integer"},
+          "dept_id": {"type": "integer"},
+          "role_id": {"type": "integer"},
+          "username": {"type": "string"},
+          "firstname": {"type": "string"},
+          "lastname": {"type": "string"},
+          "email": {"type": "string"},
+          "phone": {"type": "string"},
+          "isactive": {"type": "boolean"},
+          "isadmin": {"type": "boolean"},
+          "onvacation": {"type": "boolean"},
+          "created": {"type": "string", "format": "date-time"}
+        }
+      },
+      "StaffSummary": {
+        "type": "object",
+        "properties": {
+          "staff_id": {"type": "integer"},
+          "username": {"type": "string"},
+          "name": {"type": "string"},
+          "email": {"type": "string"}
+        }
+      },
+      "StaffDetail": {
+        "allOf": [
+          {"$ref": "#/components/schemas/Staff"},
+          {
+            "type": "object",
+            "properties": {
+              "department": {"$ref": "#/components/schemas/DepartmentSummary"},
+              "role": {"$ref": "#/components/schemas/Role"},
+              "teams": {
+                "type": "array",
+                "items": {"$ref": "#/components/schemas/TeamSummary"}
+              },
+              "departments": {
+                "type": "array",
+                "items": {"$ref": "#/components/schemas/DepartmentSummary"}
+              }
+            }
+          }
+        ]
+      },
+      "StaffList": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/Staff"}
+          },
+          "pagination": {"$ref": "#/components/schemas/Pagination"}
+        }
+      },
+      "Department": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "pid": {"type": "integer"},
+          "name": {"type": "string"},
+          "path": {"type": "string"},
+          "ispublic": {"type": "boolean"},
+          "flags": {"type": "integer"},
+          "sla_id": {"type": "integer"},
+          "manager_id": {"type": "integer"},
+          "created": {"type": "string", "format": "date-time"}
+        }
+      },
+      "DepartmentSummary": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "name": {"type": "string"}
+        }
+      },
+      "DepartmentDetail": {
+        "allOf": [
+          {"$ref": "#/components/schemas/Department"},
+          {
+            "type": "object",
+            "properties": {
+              "manager": {"$ref": "#/components/schemas/StaffSummary"},
+              "sla": {"$ref": "#/components/schemas/SLASummary"},
+              "parent": {"$ref": "#/components/schemas/DepartmentSummary"},
+              "staffCount": {"type": "integer"},
+              "ticketCount": {"type": "integer"}
+            }
+          }
+        ]
+      },
+      "DepartmentList": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/Department"}
+          },
+          "pagination": {"$ref": "#/components/schemas/Pagination"}
+        }
+      },
+      "Team": {
+        "type": "object",
+        "properties": {
+          "team_id": {"type": "integer"},
+          "name": {"type": "string"},
+          "lead_id": {"type": "integer"},
+          "flags": {"type": "integer"},
+          "created": {"type": "string", "format": "date-time"}
+        }
+      },
+      "TeamSummary": {
+        "type": "object",
+        "properties": {
+          "team_id": {"type": "integer"},
+          "name": {"type": "string"}
+        }
+      },
+      "TeamDetail": {
+        "allOf": [
+          {"$ref": "#/components/schemas/Team"},
+          {
+            "type": "object",
+            "properties": {
+              "lead": {"$ref": "#/components/schemas/StaffSummary"},
+              "members": {
+                "type": "array",
+                "items": {"$ref": "#/components/schemas/StaffSummary"}
+              }
+            }
+          }
+        ]
+      },
+      "TeamList": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/Team"}
+          },
+          "pagination": {"$ref": "#/components/schemas/Pagination"}
+        }
+      },
+      "Organization": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "name": {"type": "string"},
+          "domain": {"type": "string"},
+          "status": {"type": "integer"},
+          "created": {"type": "string", "format": "date-time"},
+          "updated": {"type": "string", "format": "date-time"}
+        }
+      },
+      "OrganizationSummary": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "name": {"type": "string"}
+        }
+      },
+      "OrganizationDetail": {
+        "allOf": [
+          {"$ref": "#/components/schemas/Organization"},
+          {
+            "type": "object",
+            "properties": {
+              "manager": {"$ref": "#/components/schemas/StaffSummary"},
+              "userCount": {"type": "integer"},
+              "ticketCount": {"type": "integer"}
+            }
+          }
+        ]
+      },
+      "OrganizationList": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/Organization"}
+          },
+          "pagination": {"$ref": "#/components/schemas/Pagination"}
+        }
+      },
+      "Topic": {
+        "type": "object",
+        "properties": {
+          "topic_id": {"type": "integer"},
+          "topic_pid": {"type": "integer"},
+          "topic": {"type": "string"},
+          "ispublic": {"type": "boolean"},
+          "dept_id": {"type": "integer"},
+          "priority_id": {"type": "integer"},
+          "sla_id": {"type": "integer"},
+          "sort": {"type": "integer"},
+          "created": {"type": "string", "format": "date-time"}
+        }
+      },
+      "TopicSummary": {
+        "type": "object",
+        "properties": {
+          "topic_id": {"type": "integer"},
+          "topic": {"type": "string"}
+        }
+      },
+      "TopicList": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/Topic"}
+          },
+          "pagination": {"$ref": "#/components/schemas/Pagination"}
+        }
+      },
+      "SLA": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "name": {"type": "string"},
+          "grace_period": {"type": "integer"},
+          "flags": {"type": "integer"},
+          "created": {"type": "string", "format": "date-time"}
+        }
+      },
+      "SLASummary": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "name": {"type": "string"},
+          "grace_period": {"type": "integer"}
+        }
+      },
+      "SLAList": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/SLA"}
+          }
+        }
+      },
+      "Status": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "name": {"type": "string"},
+          "state": {"type": "string", "enum": ["open", "closed", "archived", "deleted"]},
+          "flags": {"type": "integer"},
+          "sort": {"type": "integer"}
+        }
+      },
+      "StatusList": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/Status"}
+          }
+        }
+      },
+      "Priority": {
+        "type": "object",
+        "properties": {
+          "priority_id": {"type": "integer"},
+          "priority": {"type": "string"},
+          "priority_desc": {"type": "string"},
+          "priority_color": {"type": "string"},
+          "priority_urgency": {"type": "integer"}
+        }
+      },
+      "PriorityList": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/Priority"}
+          }
+        }
+      },
+      "FAQ": {
+        "type": "object",
+        "properties": {
+          "faq_id": {"type": "integer"},
+          "category_id": {"type": "integer"},
+          "question": {"type": "string"},
+          "answer": {"type": "string"},
+          "keywords": {"type": "string"},
+          "ispublished": {"type": "boolean"},
+          "created": {"type": "string", "format": "date-time"}
+        }
+      },
+      "FAQList": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/FAQ"}
+          },
+          "pagination": {"$ref": "#/components/schemas/Pagination"}
+        }
+      },
+      "FAQCategory": {
+        "type": "object",
+        "properties": {
+          "category_id": {"type": "integer"},
+          "category_pid": {"type": "integer"},
+          "name": {"type": "string"},
+          "description": {"type": "string"},
+          "ispublic": {"type": "boolean"},
+          "faqCount": {"type": "integer"}
+        }
+      },
+      "FAQCategoryList": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/FAQCategory"}
+          }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "number": {"type": "string"},
+          "object_id": {"type": "integer"},
+          "object_type": {"type": "string"},
+          "dept_id": {"type": "integer"},
+          "staff_id": {"type": "integer"},
+          "team_id": {"type": "integer"},
+          "flags": {"type": "integer"},
+          "duedate": {"type": "string", "format": "date-time"},
+          "closed": {"type": "string", "format": "date-time"},
+          "created": {"type": "string", "format": "date-time"}
+        }
+      },
+      "TaskDetail": {
+        "allOf": [
+          {"$ref": "#/components/schemas/Task"},
+          {
+            "type": "object",
+            "properties": {
+              "title": {"type": "string"},
+              "description": {"type": "string"},
+              "staff": {"$ref": "#/components/schemas/StaffSummary"},
+              "team": {"$ref": "#/components/schemas/TeamSummary"},
+              "department": {"$ref": "#/components/schemas/DepartmentSummary"},
+              "ticket": {
+                "type": "object",
+                "properties": {
+                  "ticket_id": {"type": "integer"},
+                  "number": {"type": "string"}
+                }
+              }
+            }
+          }
+        ]
+      },
+      "TaskList": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/Task"}
+          },
+          "pagination": {"$ref": "#/components/schemas/Pagination"}
+        }
+      },
+      "Collaborator": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "user_id": {"type": "integer"},
+          "name": {"type": "string"},
+          "email": {"type": "string"},
+          "role": {"type": "string", "enum": ["M", "C"]}
+        }
+      },
+      "Role": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "name": {"type": "string"},
+          "permissions": {"type": "object"}
+        }
+      },
+      "SystemConfig": {
+        "type": "object",
+        "properties": {
+          "helpdesk_url": {"type": "string"},
+          "helpdesk_title": {"type": "string"},
+          "default_dept_id": {"type": "integer"},
+          "default_sla_id": {"type": "integer"},
+          "default_priority_id": {"type": "integer"},
+          "enable_kb": {"type": "boolean"},
+          "enable_captcha": {"type": "boolean"}
+        }
+      },
+      "SystemStats": {
+        "type": "object",
+        "properties": {
+          "tickets": {
+            "type": "object",
+            "properties": {
+              "open": {"type": "integer"},
+              "closed": {"type": "integer"},
+              "overdue": {"type": "integer"},
+              "unassigned": {"type": "integer"}
+            }
+          },
+          "users": {"type": "integer"},
+          "staff": {"type": "integer"},
+          "departments": {"type": "integer"},
+          "teams": {"type": "integer"}
+        }
+      }
+    }
+  }
+}
