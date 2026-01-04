@@ -21,8 +21,7 @@ Nodeticket is a **Node.js-based** help desk ticketing system designed to be back
 | Component | Technology |
 |-----------|------------|
 | Runtime | Node.js |
-| Primary Database | MySQL |
-| Secondary Database | PostgreSQL |
+| Supported Databases | MySQL, PostgreSQL |
 | Compatibility | osTicket v1.8+ |
 
 ---
