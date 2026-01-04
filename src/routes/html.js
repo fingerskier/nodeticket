@@ -336,7 +336,8 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
       LEFT JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id
       LEFT JOIN ${db.table('department')} d ON t.dept_id = d.id
       LEFT JOIN ${db.table('ticket__cdata')} tc ON t.ticket_id = tc.ticket_id
-      LEFT JOIN ${db.table('ticket_priority')} tp ON t.priority_id = tp.priority_id
+      LEFT JOIN ${db.table('help_topic')} ht ON t.topic_id = ht.topic_id
+      LEFT JOIN ${db.table('ticket_priority')} tp ON ht.priority_id = tp.priority_id
       LEFT JOIN ${db.table('thread')} th ON th.object_id = t.ticket_id AND th.object_type = 'T'
       WHERE t.ticket_id = ? AND t.user_id = ?
     `, [id, userId]);

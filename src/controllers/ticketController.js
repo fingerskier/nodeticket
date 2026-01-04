@@ -28,7 +28,7 @@ const list = async (req, res) => {
            ts.name as status_name, ts.state as status_state,
            d.name as dept_name,
            ht.topic as topic_name,
-           tp.priority as priority_name, tp.priority_color,
+           tp.priority_id, tp.priority as priority_name, tp.priority_color,
            u.name as user_name,
            CONCAT(s.firstname, ' ', s.lastname) as staff_name,
            tc.subject
@@ -36,7 +36,7 @@ const list = async (req, res) => {
     LEFT JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id
     LEFT JOIN ${db.table('department')} d ON t.dept_id = d.id
     LEFT JOIN ${db.table('help_topic')} ht ON t.topic_id = ht.topic_id
-    LEFT JOIN ${db.table('ticket_priority')} tp ON t.priority_id = tp.priority_id
+    LEFT JOIN ${db.table('ticket_priority')} tp ON ht.priority_id = tp.priority_id
     LEFT JOIN ${db.table('user')} u ON t.user_id = u.id
     LEFT JOIN ${db.table('staff')} s ON t.staff_id = s.staff_id
     LEFT JOIN ${db.table('ticket__cdata')} tc ON t.ticket_id = tc.ticket_id
@@ -71,7 +71,7 @@ const list = async (req, res) => {
   }
 
   if (priority_id) {
-    sql += ` AND t.priority_id = ?`;
+    sql += ` AND ht.priority_id = ?`;
     params.push(priority_id);
   }
 
@@ -99,8 +99,10 @@ const list = async (req, res) => {
   // Add sorting
   const sortField = sort || 'created';
   const sortOrder = order === 'asc' ? 'ASC' : 'DESC';
-  const allowedSortFields = ['ticket_id', 'number', 'created', 'updated', 'duedate', 'priority_id', 'status_id'];
-  if (allowedSortFields.includes(sortField)) {
+  const allowedSortFields = ['ticket_id', 'number', 'created', 'updated', 'duedate', 'status_id'];
+  if (sortField === 'priority_id' || sortField === 'priority') {
+    sql += ` ORDER BY tp.priority_urgency ${sortOrder}`;
+  } else if (allowedSortFields.includes(sortField)) {
     sql += ` ORDER BY t.${sortField} ${sortOrder}`;
   } else {
     sql += ` ORDER BY t.created DESC`;
@@ -150,7 +152,7 @@ const get = async (req, res) => {
     LEFT JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id
     LEFT JOIN ${db.table('department')} d ON t.dept_id = d.id
     LEFT JOIN ${db.table('help_topic')} ht ON t.topic_id = ht.topic_id
-    LEFT JOIN ${db.table('ticket_priority')} tp ON t.priority_id = tp.priority_id
+    LEFT JOIN ${db.table('ticket_priority')} tp ON ht.priority_id = tp.priority_id
     LEFT JOIN ${db.table('user')} u ON t.user_id = u.id
     LEFT JOIN ${db.table('user_email')} ue ON u.default_email_id = ue.id
     LEFT JOIN ${db.table('staff')} s ON t.staff_id = s.staff_id
