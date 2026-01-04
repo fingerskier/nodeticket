@@ -89,7 +89,7 @@ const query = async (sql, params = []) => {
       const result = await pool.query(sql, params);
       return result.rows;
     } else {
-      const [rows] = await pool.execute(sql, params);
+      const [rows] = await pool.query(sql, params);
       return rows;
     }
   } catch (err) {
