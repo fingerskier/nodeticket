@@ -16,7 +16,7 @@ This document provides a comprehensive reference for the Nodeticket database sch
 
 Nodeticket supports both MySQL and PostgreSQL while maintaining full backward compatibility with existing osTicket installations.
 
-### MySQL (Primary)
+### MySQL
 
 The original osTicket schema uses MySQL-specific syntax:
 - `AUTO_INCREMENT` for auto-incrementing columns
@@ -30,7 +30,7 @@ The original osTicket schema uses MySQL-specific syntax:
 | MyISAM | Most tables | Default, optimized for reads |
 | InnoDB | `sequence`, `thread_referral`, `event` | Transaction support, row-level locking |
 
-### PostgreSQL (Secondary)
+### PostgreSQL
 
 For PostgreSQL deployments, Nodeticket provides equivalent functionality:
 - `SERIAL` / `BIGSERIAL` for auto-incrementing columns
