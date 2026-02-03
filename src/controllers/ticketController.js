@@ -269,10 +269,134 @@ const getEvents = async (req, res) => {
 };
 
 /**
- * Create ticket (placeholder for write operations)
+ * Create ticket
  */
 const create = async (req, res) => {
-  throw ApiError.badRequest('Write operations not yet implemented');
+  const { topic_id, subject, message } = req.body;
+
+  // Validate required fields
+  if (!topic_id) {
+    throw ApiError.badRequest('Help topic is required');
+  }
+  if (!subject || !subject.trim()) {
+    throw ApiError.badRequest('Subject is required');
+  }
+  if (!message || !message.trim()) {
+    throw ApiError.badRequest('Message is required');
+  }
+
+  // Get user info from auth
+  const userId = req.auth?.id;
+  const userType = req.auth?.type;
+
+  if (!userId || userType !== 'user') {
+    throw ApiError.forbidden('Only users can create tickets');
+  }
+
+  // Verify topic exists and get its department/priority
+  const topic = await db.queryOne(`
+    SELECT ht.*, d.id as dept_id, d.name as dept_name
+    FROM ${db.table('help_topic')} ht
+    LEFT JOIN ${db.table('department')} d ON ht.dept_id = d.id
+    WHERE ht.topic_id = ? AND ht.isactive = 1 AND ht.ispublic = 1
+  `, [topic_id]);
+
+  if (!topic) {
+    throw ApiError.badRequest('Invalid help topic');
+  }
+
+  // Generate ticket number
+  const ticketNumber = generateTicketNumber();
+
+  // Get default status (open)
+  const defaultStatus = await db.queryOne(`
+    SELECT id FROM ${db.table('ticket_status')}
+    WHERE state = 'open' AND mode = 1
+    ORDER BY sort ASC LIMIT 1
+  `);
+
+  if (!defaultStatus) {
+    throw ApiError.serverError('Unable to find default ticket status');
+  }
+
+  // Get user's email
+  const userEmail = await db.queryOne(`
+    SELECT ue.address as email
+    FROM ${db.table('user')} u
+    LEFT JOIN ${db.table('user_email')} ue ON u.default_email_id = ue.id
+    WHERE u.id = ?
+  `, [userId]);
+
+  // Create the ticket
+  const now = new Date();
+  const ticketResult = await db.query(`
+    INSERT INTO ${db.table('ticket')} (
+      number, user_id, dept_id, topic_id, status_id, source,
+      isoverdue, isanswered, duedate, est_duedate,
+      created, updated
+    ) VALUES (?, ?, ?, ?, ?, 'Web', 0, 0, NULL, NULL, ?, ?)
+  `, [
+    ticketNumber,
+    userId,
+    topic.dept_id,
+    topic_id,
+    defaultStatus.id,
+    now,
+    now
+  ]);
+
+  const ticketId = ticketResult.insertId;
+
+  // Create ticket custom data (subject)
+  await db.query(`
+    INSERT INTO ${db.table('ticket__cdata')} (ticket_id, subject)
+    VALUES (?, ?)
+  `, [ticketId, subject.trim().substring(0, 255)]);
+
+  // Create thread for the ticket
+  const threadResult = await db.query(`
+    INSERT INTO ${db.table('thread')} (
+      object_id, object_type, lastmessage, created
+    ) VALUES (?, 'T', ?, ?)
+  `, [ticketId, now, now]);
+
+  const threadId = threadResult.insertId;
+
+  // Create thread entry (first message)
+  await db.query(`
+    INSERT INTO ${db.table('thread_entry')} (
+      thread_id, user_id, type, poster, source, body, format, created
+    ) VALUES (?, ?, 'M', ?, 'Web', ?, 'text', ?)
+  `, [
+    threadId,
+    userId,
+    req.auth?.name || userEmail?.email || 'User',
+    message.trim(),
+    now
+  ]);
+
+  // Return the created ticket
+  res.status(201).json({
+    success: true,
+    message: 'Ticket created successfully',
+    data: {
+      ticket_id: ticketId,
+      number: ticketNumber,
+      subject: subject.trim(),
+      status: 'open',
+      department: topic.dept_name,
+      created: now
+    }
+  });
+};
+
+/**
+ * Generate a unique ticket number
+ */
+const generateTicketNumber = () => {
+  const timestamp = Date.now().toString(36).toUpperCase();
+  const random = Math.random().toString(36).substring(2, 6).toUpperCase();
+  return `${timestamp}${random}`.substring(0, 11);
 };
 
 /**
