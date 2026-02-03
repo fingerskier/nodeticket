@@ -17,7 +17,7 @@ const config = {
     dialect: process.env.DB_DIALECT || 'mysql', // 'mysql' or 'postgres'
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT, 10) || (process.env.DB_DIALECT === 'postgres' ? 5432 : 3306),
-    name: process.env.DB_NAME || 'osticket',
+    name: process.env.DB_NAME || 'original',
     user: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD || '',
     prefix: process.env.TABLE_PREFIX || 'ost_',

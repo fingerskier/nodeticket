@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Nodeticket API",
-    "description": "RESTful API for Nodeticket help desk system. Backward compatible with osTicket v1.8+.",
+    "description": "RESTful API for Nodeticket help desk system. Interoperable with osTicket v1.8+ database schemas.",
     "version": "1.0.0",
     "contact": {
       "name": "Nodeticket Support"
@@ -473,7 +473,7 @@
     "/tickets.json": {
       "post": {
         "tags": ["Tickets"],
-        "summary": "Create ticket (osTicket compatibility)",
+        "summary": "Create ticket (legacy interoperability format)",
         "operationId": "createTicketLegacy",
         "security": [{"apiKey": []}],
         "requestBody": {

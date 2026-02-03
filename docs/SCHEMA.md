@@ -1,24 +1,24 @@
 # Nodeticket Database Schema
 
-This document provides a comprehensive reference for the Nodeticket database schema, which is backward compatible with osTicket.
+This document provides a comprehensive reference for the Nodeticket database schema, which is interoperable with osTicket v1.8+ databases.
 
 ## Overview
 
 - **Platform**: Node.js
-- **Compatibility**: osTicket v1.8+ (backward compatible)
+- **Database Interoperability**: osTicket v1.8+ schema
 - **Primary Database**: MySQL
 - **Secondary Database**: PostgreSQL
 - **Default Charset**: UTF-8
 - **Table Prefix**: Configurable via `TABLE_PREFIX` environment variable (default: `ost_`)
-- **Total Tables**: 66
+- **Total Tables**: 67 (plus 4 dynamic `__cdata` tables)
 
 ## Database Support
 
-Nodeticket supports both MySQL and PostgreSQL while maintaining full backward compatibility with existing osTicket installations.
+Nodeticket supports MySQL and plans to support PostgreSQL.
 
 ### MySQL
 
-The original osTicket schema uses MySQL-specific syntax:
+The original database schema uses MySQL-specific syntax:
 - `AUTO_INCREMENT` for auto-incrementing columns
 - `ENGINE=MyISAM` / `ENGINE=InnoDB` specifications
 - MySQL-specific collations (`utf8_unicode_ci`, `ascii_general_ci`, `ascii_bin`)
@@ -77,7 +77,7 @@ System configuration key-value store.
 | `namespace` | VARCHAR(64) | NOT NULL | Configuration namespace |
 | `key` | VARCHAR(64) | NOT NULL | Configuration key |
 | `value` | TEXT | NOT NULL | Configuration value |
-| `updated` | TIMESTAMP | | Last update time |
+| `updated` | TIMESTAMP | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Last update time |
 
 **Indexes**: UNIQUE(`namespace`, `key`)
 
@@ -90,11 +90,11 @@ Auto-increment sequence management for ticket numbers.
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
 | `name` | VARCHAR(64) | | Sequence name |
-| `flags` | INT(10) UNSIGNED | DEFAULT 0 | |
+| `flags` | INT(10) UNSIGNED | | |
 | `next` | BIGINT(20) UNSIGNED | NOT NULL, DEFAULT 1 | Next value |
 | `increment` | INT(11) | DEFAULT 1 | Increment step |
 | `padding` | CHAR(1) | DEFAULT '0' | Padding character |
-| `updated` | DATETIME | | Last update |
+| `updated` | DATETIME | NOT NULL | Last update |
 
 **Engine**: InnoDB (required for row-level locking)
 
@@ -114,7 +114,7 @@ System logs and audit trails.
 | `created` | DATETIME | NOT NULL | Creation time |
 | `updated` | DATETIME | NOT NULL | Last update |
 
-**Indexes**: `log_type`, `created`
+**Indexes**: `log_type`
 
 ---
 
@@ -123,15 +123,16 @@ User session management.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
-| `session_id` | VARCHAR(255) | PK, ascii_general_ci | Session identifier |
+| `session_id` | VARCHAR(255) | PK, ascii_general_ci, DEFAULT '' | Session identifier |
 | `session_data` | BLOB | | Serialized session data |
 | `session_expire` | DATETIME | | Expiration time |
 | `session_updated` | DATETIME | | Last activity |
-| `user_id` | VARCHAR(16) | | Associated user/staff |
-| `user_ip` | VARCHAR(64) | | Client IP |
-| `user_agent` | VARCHAR(255) | utf8_unicode_ci | Browser user agent |
+| `user_id` | VARCHAR(16) | NOT NULL, DEFAULT '0' | Associated user/staff ID |
+| `user_ip` | VARCHAR(64) | NOT NULL | Client IP |
+| `user_agent` | VARCHAR(255) | NOT NULL, utf8_unicode_ci | Browser user agent |
 
-**Indexes**: `updated` (`session_updated`, `session_id`)
+**Indexes**: `updated` (`session_updated`), `user_id`
+**Collation**: `utf8_unicode_ci`
 
 ---
 
@@ -145,6 +146,7 @@ Event definitions and triggers.
 | `description` | VARCHAR(60) | | Event description |
 
 **Engine**: InnoDB
+**Indexes**: UNIQUE(`name`)
 
 ---
 
@@ -156,9 +158,9 @@ End user/client profiles.
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `id` | INT(10) UNSIGNED | PK, AUTO_INCREMENT | |
-| `org_id` | INT(11) UNSIGNED | DEFAULT 0 | Organization FK |
-| `default_email_id` | INT(10) UNSIGNED | NOT NULL | Primary email FK |
-| `status` | INT(11) UNSIGNED | DEFAULT 0 | Account status flags |
+| `org_id` | INT(10) UNSIGNED | NOT NULL | Organization FK |
+| `default_email_id` | INT(10) | NOT NULL | Primary email FK |
+| `status` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Account status flags |
 | `name` | VARCHAR(128) | NOT NULL | Display name |
 | `created` | DATETIME | NOT NULL | Creation date |
 | `updated` | DATETIME | NOT NULL | Last update |
@@ -188,14 +190,14 @@ User portal login credentials.
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
 | `user_id` | INT(10) UNSIGNED | NOT NULL | User FK |
-| `status` | INT(11) UNSIGNED | DEFAULT 0 | Account status |
+| `status` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Account status |
 | `timezone` | VARCHAR(64) | | User timezone |
 | `lang` | VARCHAR(16) | | Preferred language |
 | `username` | VARCHAR(64) | | Login username |
 | `passwd` | VARCHAR(128) | ascii_bin | Password hash |
 | `backend` | VARCHAR(32) | | Auth backend |
 | `extra` | TEXT | | Additional data (JSON) |
-| `registered` | DATETIME | | Registration date |
+| `registered` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Registration date |
 
 **Indexes**: UNIQUE(`username`), `user_id`
 
@@ -217,15 +219,15 @@ Client organizations/companies.
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
-| `name` | VARCHAR(128) | NOT NULL | Organization name |
-| `manager` | VARCHAR(16) | | Account manager reference |
-| `status` | INT(11) UNSIGNED | DEFAULT 0 | Status flags |
-| `domain` | VARCHAR(256) | | Email domain for auto-add |
+| `name` | VARCHAR(128) | NOT NULL, DEFAULT '' | Organization name |
+| `manager` | VARCHAR(16) | NOT NULL, DEFAULT '' | Account manager reference |
+| `status` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Status flags |
+| `domain` | VARCHAR(256) | NOT NULL, DEFAULT '' | Email domain for auto-add |
 | `extra` | TEXT | | Additional data (JSON) |
-| `created` | DATETIME | NOT NULL | Creation date |
-| `updated` | DATETIME | NOT NULL | Last update |
+| `created` | TIMESTAMP | | Creation date |
+| `updated` | TIMESTAMP | ON UPDATE CURRENT_TIMESTAMP | Last update |
 
-**Indexes**: `name`
+**Indexes**: (none)
 
 ---
 
@@ -254,7 +256,7 @@ Help desk agents/support staff.
 | `lastname` | VARCHAR(32) | | Last name |
 | `passwd` | VARCHAR(128) | | Password hash |
 | `backend` | VARCHAR(32) | | Auth backend |
-| `email` | VARCHAR(128) | | Staff email |
+| `email` | VARCHAR(255) | | Staff email |
 | `phone` | VARCHAR(24) | | Phone number |
 | `phone_ext` | VARCHAR(6) | | Extension |
 | `mobile` | VARCHAR(24) | | Mobile number |
@@ -306,7 +308,7 @@ Staff roles with permission sets.
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
 | `flags` | INT(10) UNSIGNED | DEFAULT 1 | Role flags |
-| `name` | VARCHAR(64) | NOT NULL | Role name |
+| `name` | VARCHAR(64) | DEFAULT NULL | Role name |
 | `permissions` | TEXT | | Permission JSON |
 | `notes` | TEXT | | Role description |
 | `created` | DATETIME | NOT NULL | Creation date |
@@ -322,12 +324,14 @@ Staff groups (legacy, maintained for compatibility).
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `id` | INT(10) UNSIGNED | PK, AUTO_INCREMENT | |
-| `role_id` | INT(10) UNSIGNED | DEFAULT 0 | Default role FK |
-| `flags` | INT(10) UNSIGNED | DEFAULT 1 | Group flags |
-| `name` | VARCHAR(120) | NOT NULL | Group name |
+| `role_id` | INT(11) UNSIGNED | NOT NULL | Default role FK |
+| `flags` | INT(11) UNSIGNED | NOT NULL, DEFAULT 1 | Group flags |
+| `name` | VARCHAR(120) | NOT NULL, DEFAULT '' | Group name |
 | `notes` | TEXT | | Group notes |
 | `created` | DATETIME | NOT NULL | Creation date |
 | `updated` | DATETIME | NOT NULL | Last update |
+
+**Indexes**: `role_id`
 
 ---
 
@@ -339,21 +343,21 @@ Support departments with routing configuration.
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
-| `pid` | INT(11) UNSIGNED | DEFAULT 0 | Parent department FK |
-| `tpl_id` | INT(10) UNSIGNED | DEFAULT 0 | Email template set FK |
-| `sla_id` | INT(10) UNSIGNED | DEFAULT 0 | Default SLA FK |
-| `schedule_id` | INT(10) UNSIGNED | DEFAULT 0 | Business hours FK |
-| `email_id` | INT(10) UNSIGNED | DEFAULT 0 | Outgoing email FK |
-| `autoresp_email_id` | INT(10) UNSIGNED | DEFAULT 0 | Auto-response email FK |
-| `manager_id` | INT(10) UNSIGNED | DEFAULT 0 | Department manager FK |
-| `flags` | INT(10) UNSIGNED | DEFAULT 0 | Department flags |
-| `name` | VARCHAR(128) | NOT NULL | Department name |
+| `pid` | INT(11) UNSIGNED | | Parent department FK |
+| `tpl_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Email template set FK |
+| `sla_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Default SLA FK |
+| `schedule_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Business hours FK |
+| `email_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Outgoing email FK |
+| `autoresp_email_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Auto-response email FK |
+| `manager_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Department manager FK |
+| `flags` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Department flags |
+| `name` | VARCHAR(128) | NOT NULL, DEFAULT '' | Department name |
 | `signature` | TEXT | NOT NULL | Department signature |
 | `ispublic` | TINYINT(1) UNSIGNED | DEFAULT 1 | Public visibility |
 | `group_membership` | TINYINT(1) | DEFAULT 0 | Extended access mode |
 | `ticket_auto_response` | TINYINT(1) | DEFAULT 1 | Auto-response enabled |
 | `message_auto_response` | TINYINT(1) | DEFAULT 0 | Message auto-response |
-| `path` | VARCHAR(128) | NOT NULL | Hierarchical path |
+| `path` | VARCHAR(128) | NOT NULL, DEFAULT '/' | Hierarchical path |
 | `updated` | DATETIME | NOT NULL | Last update |
 | `created` | DATETIME | NOT NULL | Creation date |
 
@@ -399,25 +403,25 @@ Core support tickets table.
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `ticket_id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
-| `ticket_pid` | INT(11) UNSIGNED | DEFAULT 0 | Parent ticket (for merges) |
-| `number` | VARCHAR(20) | NOT NULL | Ticket number |
+| `ticket_pid` | INT(11) UNSIGNED | | Parent ticket (for merges) |
+| `number` | VARCHAR(20) | | Ticket number |
 | `user_id` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Ticket owner FK |
-| `user_email_id` | INT(11) UNSIGNED | DEFAULT NULL | Owner email FK |
+| `user_email_id` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Owner email FK |
 | `status_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Current status FK |
 | `dept_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Department FK |
-| `sla_id` | INT(10) UNSIGNED | DEFAULT 0 | SLA FK |
-| `topic_id` | INT(10) UNSIGNED | DEFAULT 0 | Help topic FK |
-| `staff_id` | INT(10) UNSIGNED | DEFAULT 0 | Assigned staff FK |
-| `team_id` | INT(10) UNSIGNED | DEFAULT 0 | Assigned team FK |
-| `email_id` | INT(11) UNSIGNED | DEFAULT 0 | Receiving email FK |
-| `lock_id` | INT(11) UNSIGNED | DEFAULT 0 | Edit lock FK |
-| `flags` | INT(10) UNSIGNED | DEFAULT 0 | Ticket flags |
-| `sort` | INT(11) UNSIGNED | DEFAULT 0 | Sort order |
+| `sla_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | SLA FK |
+| `topic_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Help topic FK |
+| `staff_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Assigned staff FK |
+| `team_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Assigned team FK |
+| `email_id` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Receiving email FK |
+| `lock_id` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Edit lock FK |
+| `flags` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Ticket flags |
+| `sort` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Sort order |
 | `ip_address` | VARCHAR(64) | NOT NULL, DEFAULT '' | Creator IP |
-| `source` | ENUM('Web','Email','Phone','API','Other') | DEFAULT 'Other' | Ticket source |
+| `source` | ENUM('Web','Email','Phone','API','Other') | NOT NULL, DEFAULT 'Other' | Ticket source |
 | `source_extra` | VARCHAR(40) | | Additional source info |
-| `isoverdue` | TINYINT(1) UNSIGNED | DEFAULT 0 | Overdue flag |
-| `isanswered` | TINYINT(1) UNSIGNED | DEFAULT 0 | Answered flag |
+| `isoverdue` | TINYINT(1) UNSIGNED | NOT NULL, DEFAULT 0 | Overdue flag |
+| `isanswered` | TINYINT(1) UNSIGNED | NOT NULL, DEFAULT 0 | Answered flag |
 | `duedate` | DATETIME | | User-set due date |
 | `est_duedate` | DATETIME | | SLA-calculated due date |
 | `reopened` | DATETIME | | Last reopen time |
@@ -445,9 +449,9 @@ Ticket status definitions.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
-| `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
-| `name` | VARCHAR(60) | NOT NULL | Status name |
-| `state` | VARCHAR(16) | NOT NULL | State: open, closed, archived, deleted |
+| `id` | INT(11) | PK, AUTO_INCREMENT | |
+| `name` | VARCHAR(60) | NOT NULL, DEFAULT '' | Status name |
+| `state` | VARCHAR(16) | | State: open, closed, archived, deleted |
 | `mode` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Status mode |
 | `flags` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Status flags |
 | `sort` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Sort order |
@@ -464,7 +468,7 @@ Priority level definitions.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
-| `priority_id` | TINYINT(4) UNSIGNED | PK, AUTO_INCREMENT | |
+| `priority_id` | TINYINT(4) | PK, AUTO_INCREMENT | |
 | `priority` | VARCHAR(60) | NOT NULL | Priority name |
 | `priority_desc` | VARCHAR(30) | NOT NULL | Short description |
 | `priority_color` | VARCHAR(7) | NOT NULL | Hex color code |
@@ -485,6 +489,8 @@ Pessimistic edit locks for tickets.
 | `expire` | DATETIME | | Lock expiration |
 | `code` | VARCHAR(20) | | Lock code |
 | `created` | DATETIME | NOT NULL | Creation time |
+
+**Indexes**: `staff_id`
 
 ---
 
@@ -535,7 +541,7 @@ Individual thread messages/responses.
 | `extra` | TEXT | | Additional data (JSON) |
 | `recipients` | TEXT | | Recipient list |
 | `created` | DATETIME | NOT NULL | Creation date |
-| `updated` | DATETIME | NOT NULL, DEFAULT '0000-00-00 00:00:00' | Last update |
+| `updated` | DATETIME | NOT NULL | Last update |
 
 **Indexes**: `pid`, `thread_id`, `staff_id`, `type`
 
@@ -553,8 +559,8 @@ Email metadata for thread entries.
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
 | `thread_entry_id` | INT(11) UNSIGNED | NOT NULL | Thread entry FK |
-| `email_id` | INT(11) UNSIGNED | DEFAULT 0 | Receiving email FK |
-| `mid` | VARCHAR(255) | | Message-ID header |
+| `email_id` | INT(11) UNSIGNED | DEFAULT NULL | Receiving email FK |
+| `mid` | VARCHAR(255) | NOT NULL | Message-ID header |
 | `headers` | TEXT | | Raw email headers |
 
 **Indexes**: `thread_entry_id`, `mid`, `email_id`
@@ -570,6 +576,8 @@ Merged thread entry data preservation.
 | `thread_entry_id` | INT(11) UNSIGNED | NOT NULL | Thread entry FK |
 | `data` | TEXT | | Preserved merge data (JSON) |
 
+**Indexes**: `thread_entry_id`
+
 ---
 
 #### `thread_event`
@@ -577,15 +585,15 @@ Thread activity log/audit trail.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
-| `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
-| `thread_id` | INT(11) UNSIGNED | NOT NULL | Thread FK |
-| `thread_type` | CHAR(1) | DEFAULT '' | Thread object type |
-| `event_id` | INT(11) UNSIGNED | DEFAULT NULL | Event definition FK |
-| `staff_id` | INT(11) UNSIGNED | DEFAULT NULL | Acting staff FK |
-| `team_id` | INT(11) UNSIGNED | DEFAULT NULL | Acting team FK |
-| `dept_id` | INT(11) UNSIGNED | DEFAULT NULL | Related department FK |
-| `topic_id` | INT(11) UNSIGNED | DEFAULT NULL | Related topic FK |
-| `data` | TEXT | | Event data (JSON) |
+| `id` | INT(10) UNSIGNED | PK, AUTO_INCREMENT | |
+| `thread_id` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Thread FK |
+| `thread_type` | CHAR(1) | NOT NULL, DEFAULT '' | Thread object type |
+| `event_id` | INT(11) UNSIGNED | | Event definition FK |
+| `staff_id` | INT(11) UNSIGNED | NOT NULL | Acting staff FK |
+| `team_id` | INT(11) UNSIGNED | NOT NULL | Acting team FK |
+| `dept_id` | INT(11) UNSIGNED | NOT NULL | Related department FK |
+| `topic_id` | INT(11) UNSIGNED | NOT NULL | Related topic FK |
+| `data` | VARCHAR(1024) | | Event data (encoded differences) |
 | `username` | VARCHAR(128) | NOT NULL, DEFAULT 'SYSTEM' | Actor username |
 | `uid` | INT(11) UNSIGNED | | Actor user ID |
 | `uid_type` | CHAR(1) | NOT NULL, DEFAULT 'S' | Actor type |
@@ -603,7 +611,7 @@ Inter-ticket cross-references/referrals.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
-| `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
+| `id` | INT(10) UNSIGNED | PK, AUTO_INCREMENT | |
 | `thread_id` | INT(11) UNSIGNED | NOT NULL | Source thread FK |
 | `object_id` | INT(11) UNSIGNED | NOT NULL | Target object ID |
 | `object_type` | CHAR(1) | NOT NULL | Target object type |
@@ -623,7 +631,7 @@ External collaborators on ticket threads.
 | `flags` | INT(10) UNSIGNED | DEFAULT 1 | Collaborator flags |
 | `thread_id` | INT(11) UNSIGNED | NOT NULL | Thread FK |
 | `user_id` | INT(11) UNSIGNED | NOT NULL | Collaborator user FK |
-| `role` | CHAR(1) | NOT NULL, DEFAULT 'M' | Role: M=Participant, C=CC |
+| `role` | CHAR(1) | NOT NULL, DEFAULT 'M' | Role: M=Message (clients), N=Note (3rd-Party), R=Reply (external authority) |
 | `created` | DATETIME | NOT NULL | Addition date |
 | `updated` | DATETIME | NOT NULL | Last update |
 
@@ -639,14 +647,14 @@ Internal work items/sub-tickets.
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
-| `object_id` | INT(11) UNSIGNED | DEFAULT 0 | Parent object ID |
-| `object_type` | CHAR(1) | DEFAULT '' | Parent object type |
+| `object_id` | INT(11) | NOT NULL, DEFAULT 0 | Parent object ID |
+| `object_type` | CHAR(1) | NOT NULL | Parent object type |
 | `number` | VARCHAR(20) | | Task number |
 | `dept_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Department FK |
-| `staff_id` | INT(10) UNSIGNED | DEFAULT 0 | Assigned staff FK |
-| `team_id` | INT(10) UNSIGNED | DEFAULT 0 | Assigned team FK |
-| `lock_id` | INT(11) UNSIGNED | DEFAULT 0 | Edit lock FK |
-| `flags` | INT(10) UNSIGNED | DEFAULT 0 | Task flags |
+| `staff_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Assigned staff FK |
+| `team_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Assigned team FK |
+| `lock_id` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Edit lock FK |
+| `flags` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Task flags |
 | `duedate` | DATETIME | | Due date |
 | `closed` | DATETIME | | Closure date |
 | `created` | DATETIME | NOT NULL | Creation date |
@@ -674,14 +682,14 @@ Internal notes (non-ticket).
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
-| `pid` | INT(11) UNSIGNED | DEFAULT 0 | Parent note (for threading) |
+| `pid` | INT(11) UNSIGNED | | Parent note (for threading) |
 | `staff_id` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Author staff FK |
 | `ext_id` | VARCHAR(10) | | External reference ID |
 | `body` | TEXT | | Note content |
-| `status` | INT(11) UNSIGNED | DEFAULT 0 | Note status |
-| `sort` | INT(11) UNSIGNED | DEFAULT 0 | Sort order |
-| `created` | DATETIME | NOT NULL | Creation date |
-| `updated` | DATETIME | NOT NULL | Last update |
+| `status` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Note status |
+| `sort` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Sort order |
+| `created` | TIMESTAMP | NOT NULL, DEFAULT '0000-00-00 00:00:00' | Creation date |
+| `updated` | TIMESTAMP | NOT NULL, DEFAULT '0000-00-00 00:00:00', ON UPDATE CURRENT_TIMESTAMP | Last update |
 
 **Indexes**: `ext_id`
 
@@ -694,11 +702,11 @@ Unsaved message drafts.
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
 | `staff_id` | INT(11) UNSIGNED | NOT NULL | Author staff FK |
-| `namespace` | VARCHAR(32) | NOT NULL | Draft context namespace |
+| `namespace` | VARCHAR(32) | NOT NULL, DEFAULT '' | Draft context namespace |
 | `body` | TEXT | NOT NULL | Draft content |
 | `extra` | TEXT | | Additional data (JSON) |
-| `created` | TIMESTAMP | | Creation time |
-| `updated` | TIMESTAMP | ON UPDATE CURRENT_TIMESTAMP | Last update |
+| `created` | TIMESTAMP | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Creation time |
+| `updated` | TIMESTAMP | | Last update |
 
 **Indexes**: `staff_id`, `namespace`
 
@@ -713,11 +721,11 @@ Email addresses and department associations.
 |--------|------|-------------|-------------|
 | `email_id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
 | `noautoresp` | TINYINT(1) UNSIGNED | NOT NULL, DEFAULT 0 | Disable auto-response |
-| `priority_id` | TINYINT(4) UNSIGNED | DEFAULT 2 | Default priority FK |
-| `dept_id` | INT(10) UNSIGNED | DEFAULT 0 | Default department FK |
-| `topic_id` | INT(11) UNSIGNED | DEFAULT 0 | Default topic FK |
-| `email` | VARCHAR(255) | NOT NULL | Email address |
-| `name` | VARCHAR(255) | NOT NULL | Display name |
+| `priority_id` | INT(11) UNSIGNED | NOT NULL, DEFAULT 2 | Default priority FK |
+| `dept_id` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Default department FK |
+| `topic_id` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Default topic FK |
+| `email` | VARCHAR(255) | NOT NULL, DEFAULT '' | Email address |
+| `name` | VARCHAR(255) | NOT NULL, DEFAULT '' | Display name |
 | `notes` | TEXT | | Admin notes |
 | `created` | DATETIME | NOT NULL | Creation date |
 | `updated` | DATETIME | NOT NULL | Last update |
@@ -734,25 +742,25 @@ Email account configurations (IMAP/SMTP).
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
 | `email_id` | INT(11) UNSIGNED | NOT NULL | Email FK |
 | `type` | ENUM('mailbox','smtp') | NOT NULL | Account type |
-| `auth_bk` | VARCHAR(64) | | Auth backend |
-| `auth_id` | TEXT | | Auth credentials |
-| `active` | TINYINT(1) | DEFAULT 1 | Active status |
-| `host` | VARCHAR(255) | | Server hostname |
-| `port` | INT(11) | | Server port |
+| `auth_bk` | VARCHAR(128) | NOT NULL | Auth backend |
+| `auth_id` | VARCHAR(16) | | Auth credentials |
+| `active` | TINYINT(1) UNSIGNED | NOT NULL, DEFAULT 0 | Active status |
+| `host` | VARCHAR(128) | NOT NULL, DEFAULT '' | Server hostname |
+| `port` | INT(11) | NOT NULL | Server port |
 | `folder` | VARCHAR(255) | | IMAP folder |
-| `protocol` | ENUM('IMAP','POP','SMTP','OTHER') | | Protocol type |
-| `encryption` | ENUM('NONE','AUTO','SSL') | | Encryption type |
-| `fetchfreq` | TINYINT(3) | DEFAULT 5 | Fetch frequency (minutes) |
+| `protocol` | ENUM('IMAP','POP','SMTP','OTHER') | NOT NULL, DEFAULT 'OTHER' | Protocol type |
+| `encryption` | ENUM('NONE','AUTO','SSL') | NOT NULL, DEFAULT 'AUTO' | Encryption type |
+| `fetchfreq` | TINYINT(3) UNSIGNED | NOT NULL, DEFAULT 5 | Fetch frequency (minutes) |
 | `fetchmax` | TINYINT(4) UNSIGNED | DEFAULT 30 | Max messages per fetch |
-| `postfetch` | ENUM('delete','nothing','archive') | DEFAULT 'nothing' | Post-fetch action |
+| `postfetch` | ENUM('archive','delete','nothing') | NOT NULL, DEFAULT 'nothing' | Post-fetch action |
 | `archivefolder` | VARCHAR(255) | | Archive folder path |
 | `allow_spoofing` | TINYINT(1) UNSIGNED | DEFAULT 0 | Allow from spoofing |
-| `num_errors` | TINYINT(3) UNSIGNED | DEFAULT 0 | Error count |
-| `last_error_msg` | VARCHAR(255) | | Last error message |
+| `num_errors` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Error count |
+| `last_error_msg` | TINYTEXT | | Last error message |
 | `last_error` | DATETIME | | Last error time |
 | `last_activity` | DATETIME | | Last activity time |
 | `created` | DATETIME | NOT NULL | Creation date |
-| `updated` | DATETIME | NOT NULL | Last update |
+| `updated` | DATETIME | NOT NULL, DEFAULT '0000-00-00 00:00:00' | Last update |
 
 **Indexes**: `email_id`, `type`
 
@@ -763,13 +771,13 @@ Email template sets.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
-| `tpl_id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
+| `tpl_id` | INT(11) | PK, AUTO_INCREMENT | |
 | `isactive` | TINYINT(1) UNSIGNED | NOT NULL, DEFAULT 0 | Active status |
-| `name` | VARCHAR(32) | NOT NULL | Template set name |
-| `lang` | VARCHAR(16) | DEFAULT 'en_US' | Language code |
+| `name` | VARCHAR(32) | NOT NULL, DEFAULT '' | Template set name |
+| `lang` | VARCHAR(16) | NOT NULL, DEFAULT 'en_US' | Language code |
 | `notes` | TEXT | | Admin notes |
 | `created` | DATETIME | NOT NULL | Creation date |
-| `updated` | DATETIME | NOT NULL | Last update |
+| `updated` | TIMESTAMP | NOT NULL | Last update |
 
 ---
 
@@ -779,7 +787,7 @@ Individual email templates.
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
-| `tpl_id` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Template set FK |
+| `tpl_id` | INT(11) UNSIGNED | NOT NULL | Template set FK |
 | `code_name` | VARCHAR(32) | NOT NULL | Template identifier |
 | `subject` | VARCHAR(255) | NOT NULL | Email subject template |
 | `body` | TEXT | NOT NULL | Email body template |
@@ -841,12 +849,12 @@ Individual filter conditions.
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
-| `filter_id` | INT(11) UNSIGNED | NOT NULL | Filter FK |
+| `filter_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Filter FK |
 | `what` | VARCHAR(32) | NOT NULL | Field to match |
 | `how` | ENUM('equal','not_equal','contains','dn_contain','starts','ends','match','not_match') | NOT NULL | Match operator |
 | `val` | VARCHAR(255) | NOT NULL | Match value |
-| `isactive` | TINYINT(1) UNSIGNED | DEFAULT 1 | Rule active |
-| `notes` | TEXT | | Admin notes |
+| `isactive` | TINYINT(1) UNSIGNED | NOT NULL, DEFAULT 1 | Rule active |
+| `notes` | TINYTEXT | NOT NULL | Admin notes |
 | `created` | DATETIME | NOT NULL | Creation date |
 | `updated` | DATETIME | NOT NULL | Last update |
 
@@ -860,7 +868,7 @@ Filter triggered actions.
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
-| `filter_id` | INT(11) UNSIGNED | NOT NULL | Filter FK |
+| `filter_id` | INT(10) UNSIGNED | NOT NULL | Filter FK |
 | `sort` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Execution order |
 | `type` | VARCHAR(24) | NOT NULL | Action type |
 | `configuration` | TEXT | | Action config (JSON) |
@@ -897,11 +905,11 @@ Hierarchical FAQ categories.
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `category_id` | INT(10) UNSIGNED | PK, AUTO_INCREMENT | |
-| `category_pid` | INT(10) UNSIGNED | DEFAULT 0 | Parent category FK |
+| `category_pid` | INT(10) UNSIGNED | | Parent category FK |
 | `ispublic` | TINYINT(1) UNSIGNED | NOT NULL, DEFAULT 0 | Public visibility |
 | `name` | VARCHAR(125) | | Category name |
 | `description` | TEXT | NOT NULL | Category description |
-| `notes` | TEXT | | Admin notes |
+| `notes` | TINYTEXT | NOT NULL | Admin notes |
 | `created` | DATETIME | NOT NULL | Creation date |
 | `updated` | DATETIME | NOT NULL | Last update |
 
@@ -927,10 +935,10 @@ Help topics for ticket categorization.
 | `topic_id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
 | `topic_pid` | INT(10) UNSIGNED | DEFAULT 0 | Parent topic FK |
 | `ispublic` | TINYINT(1) UNSIGNED | NOT NULL, DEFAULT 1 | Public visibility |
-| `noautoresp` | TINYINT(1) UNSIGNED | NOT NULL, DEFAULT 0 | Disable auto-response |
+| `noautoresp` | TINYINT(3) UNSIGNED | NOT NULL, DEFAULT 0 | Disable auto-response |
 | `flags` | INT(10) UNSIGNED | DEFAULT 0 | Topic flags |
-| `status_id` | INT(10) UNSIGNED | DEFAULT 0 | Default status FK |
-| `priority_id` | TINYINT(4) UNSIGNED | DEFAULT 0 | Default priority FK |
+| `status_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Default status FK |
+| `priority_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Default priority FK |
 | `dept_id` | INT(10) UNSIGNED | DEFAULT 0 | Default department FK |
 | `staff_id` | INT(10) UNSIGNED | DEFAULT 0 | Default assignee FK |
 | `team_id` | INT(10) UNSIGNED | DEFAULT 0 | Default team FK |
@@ -971,9 +979,9 @@ Dynamic form definitions.
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
-| `pid` | INT(11) UNSIGNED | DEFAULT 0 | Parent form FK |
+| `pid` | INT(10) UNSIGNED | | Parent form FK |
 | `type` | VARCHAR(8) | NOT NULL, DEFAULT 'G' | Form type code |
-| `flags` | INT(10) UNSIGNED | DEFAULT 1 | Form flags |
+| `flags` | INT(10) UNSIGNED | NOT NULL, DEFAULT 1 | Form flags |
 | `title` | VARCHAR(255) | NOT NULL | Form title |
 | `instructions` | VARCHAR(512) | | Form instructions |
 | `name` | VARCHAR(64) | NOT NULL, DEFAULT '' | Internal name |
@@ -1005,7 +1013,7 @@ Form field definitions.
 | `label` | VARCHAR(255) | NOT NULL | Display label |
 | `name` | VARCHAR(64) | NOT NULL | Field name |
 | `configuration` | TEXT | | Field config (JSON) |
-| `sort` | INT(10) UNSIGNED | NOT NULL | Sort order |
+| `sort` | INT(11) UNSIGNED | NOT NULL | Sort order |
 | `hint` | VARCHAR(512) | | Help text |
 | `created` | DATETIME | NOT NULL | Creation date |
 | `updated` | DATETIME | NOT NULL | Last update |
@@ -1070,11 +1078,11 @@ List item values.
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
-| `list_id` | INT(11) UNSIGNED | NOT NULL | List FK |
+| `list_id` | INT(11) | | List FK |
 | `status` | INT(11) UNSIGNED | NOT NULL, DEFAULT 1 | Item status |
 | `value` | VARCHAR(255) | NOT NULL | Display value |
-| `extra` | TEXT | | Additional data (JSON) |
-| `sort` | INT(11) UNSIGNED | NOT NULL, DEFAULT 1 | Sort order |
+| `extra` | VARCHAR(255) | | Extra value (e.g. abbreviation) |
+| `sort` | INT(11) | NOT NULL, DEFAULT 1 | Sort order |
 | `properties` | TEXT | | Item properties (JSON) |
 
 **Indexes**: `list_item_lookup` (`list_id`)
@@ -1088,15 +1096,15 @@ File storage registry.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
-| `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
+| `id` | INT(11) | PK, AUTO_INCREMENT | |
 | `ft` | CHAR(1) | NOT NULL, DEFAULT 'T' | File type code |
 | `bk` | CHAR(1) | NOT NULL, DEFAULT 'D' | Storage backend |
 | `type` | VARCHAR(255) | NOT NULL, DEFAULT '', ascii_general_ci | MIME type |
 | `size` | BIGINT(20) UNSIGNED | NOT NULL, DEFAULT 0 | File size (bytes) |
-| `key` | VARCHAR(86) | ascii_general_ci | File key/hash |
-| `signature` | VARCHAR(86) | ascii_bin | Content signature |
+| `key` | VARCHAR(86) | NOT NULL, ascii_general_ci | File key/hash |
+| `signature` | VARCHAR(86) | NOT NULL, ascii_bin | Content signature |
 | `name` | VARCHAR(255) | NOT NULL, DEFAULT '' | Original filename |
-| `attrs` | TEXT | | File attributes (JSON) |
+| `attrs` | VARCHAR(255) | | File attributes |
 | `created` | DATETIME | NOT NULL | Creation date |
 
 **Indexes**: `ft`, `key`, `signature`, `type`, `created`, `size`
@@ -1113,8 +1121,8 @@ File content chunks (database storage).
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
-| `file_id` | INT(11) UNSIGNED | PK | File FK |
-| `chunk_id` | INT(11) UNSIGNED | PK | Chunk sequence |
+| `file_id` | INT(11) | PK | File FK |
+| `chunk_id` | INT(11) | PK | Chunk sequence |
 | `filedata` | LONGBLOB | NOT NULL | Binary data |
 
 ---
@@ -1144,7 +1152,8 @@ Service Level Agreement definitions.
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
-| `flags` | INT(10) UNSIGNED | DEFAULT 3 | SLA flags |
+| `schedule_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Business hours schedule FK |
+| `flags` | INT(10) UNSIGNED | NOT NULL, DEFAULT 3 | SLA flags |
 | `grace_period` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Grace period (hours) |
 | `name` | VARCHAR(64) | NOT NULL, DEFAULT '' | SLA name |
 | `notes` | TEXT | | Admin notes |
@@ -1168,11 +1177,11 @@ Business hours/schedule definitions.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
-| `id` | INT(10) UNSIGNED | PK, AUTO_INCREMENT | |
-| `flags` | INT(10) UNSIGNED | DEFAULT 0 | Schedule flags |
+| `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
+| `flags` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Schedule flags |
 | `name` | VARCHAR(255) | NOT NULL | Schedule name |
 | `timezone` | VARCHAR(64) | | Schedule timezone |
-| `description` | TEXT | | Description |
+| `description` | VARCHAR(255) | NOT NULL | Description |
 | `created` | DATETIME | NOT NULL | Creation date |
 | `updated` | DATETIME | NOT NULL | Last update |
 
@@ -1184,19 +1193,19 @@ Schedule time blocks.
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
-| `schedule_id` | INT(10) UNSIGNED | NOT NULL | Schedule FK |
-| `flags` | INT(10) UNSIGNED | DEFAULT 0 | Entry flags |
-| `sort` | INT(10) UNSIGNED | DEFAULT 0 | Sort order |
-| `name` | VARCHAR(255) | | Entry name |
+| `schedule_id` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Schedule FK |
+| `flags` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Entry flags |
+| `sort` | TINYINT(3) UNSIGNED | NOT NULL, DEFAULT 0 | Sort order |
+| `name` | VARCHAR(255) | NOT NULL | Entry name |
 | `repeats` | VARCHAR(16) | NOT NULL, DEFAULT 'never' | Repeat pattern |
 | `starts_on` | DATE | | Start date |
 | `starts_at` | TIME | | Start time |
 | `ends_on` | DATE | | End date |
 | `ends_at` | TIME | | End time |
-| `stops_on` | DATE | | Repeat stop date |
-| `day` | INT(10) UNSIGNED | DEFAULT 0 | Day of week/month |
-| `week` | INT(10) UNSIGNED | DEFAULT 0 | Week number |
-| `month` | INT(10) UNSIGNED | DEFAULT 0 | Month |
+| `stops_on` | DATETIME | | Repeat stop date |
+| `day` | TINYINT(4) | | Day of week/month |
+| `week` | TINYINT(4) | | Week number |
+| `month` | TINYINT(4) | | Month |
 | `created` | DATETIME | NOT NULL | Creation date |
 | `updated` | DATETIME | NOT NULL | Last update |
 
@@ -1213,8 +1222,8 @@ Custom ticket queues/saved searches.
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
 | `parent_id` | INT(11) UNSIGNED | DEFAULT 0 | Parent queue FK |
-| `columns_id` | INT(11) UNSIGNED | DEFAULT 0 | Column set FK |
-| `sort_id` | INT(11) UNSIGNED | DEFAULT 0 | Default sort FK |
+| `columns_id` | INT(11) UNSIGNED | DEFAULT NULL | Column set FK |
+| `sort_id` | INT(11) UNSIGNED | DEFAULT NULL | Default sort FK |
 | `flags` | INT(11) UNSIGNED | DEFAULT 0 | Queue flags |
 | `staff_id` | INT(11) UNSIGNED | DEFAULT 0 | Owner staff FK (0=public) |
 | `sort` | INT(11) UNSIGNED | DEFAULT 0 | Sort order |
@@ -1236,10 +1245,10 @@ Available queue column definitions.
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
-| `flags` | INT(11) UNSIGNED | DEFAULT 0 | Column flags |
+| `flags` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Column flags |
 | `name` | VARCHAR(64) | NOT NULL | Column name |
-| `primary` | VARCHAR(255) | NOT NULL, DEFAULT '' | Primary field path |
-| `secondary` | VARCHAR(255) | | Secondary field path |
+| `primary` | VARCHAR(64) | NOT NULL, DEFAULT '' | Primary field path |
+| `secondary` | VARCHAR(64) | | Secondary field path |
 | `filter` | VARCHAR(32) | | Quick filter type |
 | `truncate` | VARCHAR(16) | | Truncation mode |
 | `annotations` | TEXT | | Column annotations (JSON) |
@@ -1256,10 +1265,10 @@ Staff queue column selections.
 | `queue_id` | INT(11) UNSIGNED | PK | Queue FK |
 | `column_id` | INT(11) UNSIGNED | PK | Column FK |
 | `staff_id` | INT(11) UNSIGNED | PK | Staff FK (0=default) |
-| `bits` | INT(11) UNSIGNED | DEFAULT 0 | Column bits |
-| `sort` | INT(11) UNSIGNED | DEFAULT 0 | Display order |
+| `bits` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Column bits |
+| `sort` | INT(10) UNSIGNED | NOT NULL, DEFAULT 1 | Display order |
 | `heading` | VARCHAR(64) | | Custom heading |
-| `width` | INT(11) UNSIGNED | DEFAULT 100 | Column width (px) |
+| `width` | INT(10) UNSIGNED | NOT NULL, DEFAULT 100 | Column width (px) |
 
 ---
 
@@ -1269,10 +1278,10 @@ Sort column definitions.
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
-| `root` | VARCHAR(32) | DEFAULT '' | Root object type |
+| `root` | VARCHAR(32) | DEFAULT NULL | Root object type |
 | `name` | VARCHAR(64) | NOT NULL, DEFAULT '' | Sort name |
 | `columns` | TEXT | | Sort columns (JSON) |
-| `updated` | DATETIME | NOT NULL | Last update |
+| `updated` | DATETIME | DEFAULT NULL | Last update |
 
 ---
 
@@ -1283,8 +1292,8 @@ Sort assignments to queues.
 |--------|------|-------------|-------------|
 | `queue_id` | INT(11) UNSIGNED | PK | Queue FK |
 | `sort_id` | INT(11) UNSIGNED | PK | Sort definition FK |
-| `bits` | INT(11) UNSIGNED | DEFAULT 0 | Sort bits |
-| `sort` | INT(11) UNSIGNED | DEFAULT 0 | Order |
+| `bits` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Sort bits |
+| `sort` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Order |
 
 ---
 
@@ -1295,9 +1304,9 @@ Queue export column definitions.
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
 | `queue_id` | INT(11) UNSIGNED | NOT NULL | Queue FK |
-| `path` | VARCHAR(255) | NOT NULL | Export field path |
+| `path` | VARCHAR(64) | NOT NULL, DEFAULT '' | Export field path |
 | `heading` | VARCHAR(64) | | Column heading |
-| `sort` | INT(11) UNSIGNED | DEFAULT 0 | Export order |
+| `sort` | INT(10) UNSIGNED | NOT NULL, DEFAULT 1 | Export order |
 
 **Indexes**: `queue_id`
 
@@ -1323,7 +1332,7 @@ API authentication keys.
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `id` | INT(10) UNSIGNED | PK, AUTO_INCREMENT | |
-| `isactive` | TINYINT(1) UNSIGNED | NOT NULL, DEFAULT 1 | Active status |
+| `isactive` | TINYINT(1) | NOT NULL, DEFAULT 1 | Active status |
 | `ipaddr` | VARCHAR(64) | NOT NULL | Allowed IP address |
 | `apikey` | VARCHAR(255) | NOT NULL | API key |
 | `can_create_tickets` | TINYINT(1) UNSIGNED | NOT NULL, DEFAULT 1 | Create tickets permission |
@@ -1346,7 +1355,6 @@ Installed plugins registry.
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
 | `name` | VARCHAR(255) | NOT NULL | Plugin name |
 | `install_path` | VARCHAR(60) | NOT NULL | Installation path |
-| `isphar` | TINYINT(1) UNSIGNED | NOT NULL, DEFAULT 0 | PHAR package |
 | `isactive` | TINYINT(1) UNSIGNED | NOT NULL, DEFAULT 0 | Active status |
 | `version` | VARCHAR(64) | | Plugin version |
 | `notes` | TEXT | | Admin notes |
@@ -1363,11 +1371,11 @@ Plugin instances/configurations.
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
 | `plugin_id` | INT(11) UNSIGNED | NOT NULL | Plugin FK |
-| `flags` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Instance flags |
-| `name` | VARCHAR(128) | NOT NULL, DEFAULT '' | Instance name |
+| `flags` | INT(10) | NOT NULL, DEFAULT 0 | Instance flags |
+| `name` | VARCHAR(255) | NOT NULL, DEFAULT '' | Instance name |
 | `notes` | TEXT | | Admin notes |
 | `created` | DATETIME | NOT NULL | Creation date |
-| `updated` | DATETIME | NOT NULL | Last update |
+| `updated` | DATETIME | | Last update |
 
 **Indexes**: `plugin_id`
 
@@ -1381,15 +1389,15 @@ i18n translation strings.
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `id` | INT(11) UNSIGNED | PK, AUTO_INCREMENT | |
-| `object_hash` | VARCHAR(32) | | Source object hash |
+| `object_hash` | CHAR(16) | CHARACTER SET ascii | Source object hash |
 | `type` | ENUM('phrase','article','override') | | Translation type |
-| `flags` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Translation flags |
+| `flags` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Translation flags |
 | `revision` | INT(11) UNSIGNED | | Revision number |
-| `agent_id` | INT(11) UNSIGNED | NOT NULL, DEFAULT 0 | Translator ID |
-| `lang` | VARCHAR(16) | NOT NULL, DEFAULT 'en_US' | Target language |
+| `agent_id` | INT(10) UNSIGNED | NOT NULL, DEFAULT 0 | Translator ID |
+| `lang` | VARCHAR(16) | NOT NULL, DEFAULT '' | Target language |
 | `text` | MEDIUMTEXT | NOT NULL | Translated text |
-| `source_text` | MEDIUMTEXT | | Original text |
-| `updated` | DATETIME | NOT NULL | Last update |
+| `source_text` | TEXT | | Original text |
+| `updated` | TIMESTAMP | ON UPDATE CURRENT_TIMESTAMP | Last update |
 
 **Indexes**: (`type`, `lang`), `object_hash`
 
@@ -1481,10 +1489,9 @@ Form ─────────────────┬── FormField (1:N
 
 ### Overview
 
-Nodeticket supports the original osTicket migration format and introduces a Node.js-based migration system.
+Nodeticket uses a Node.js-based migration system and can detect existing schema versions via the `schema_signature` config key for interoperability.
 
-**osTicket Compatibility**:
-- **Location**: `include/upgrader/streams/core/` (original osTicket path)
+**Schema Version Detection**:
 - **File Types**: `.patch.sql` (additions), `.cleanup.sql` (cleanup)
 - **Tracking**: `config` table with `schema_signature` key
 
@@ -1495,7 +1502,7 @@ Nodeticket supports the original osTicket migration format and introduces a Node
 
 ### Migration File Format
 
-#### osTicket SQL Format (backward compatible)
+#### SQL Migration Format (interoperable)
 ```sql
 /**
  * @signature <sha1_hash>
@@ -1507,7 +1514,7 @@ Nodeticket supports the original osTicket migration format and introduces a Node
 ALTER TABLE ...
 
 -- Update signature
-UPDATE %TABLE_PREFIX%config
+UPDATE ost_config
 SET value = '<new_signature>'
 WHERE key = 'schema_signature' AND namespace = 'core';
 ```
@@ -1593,10 +1600,10 @@ module.exports = {
 - Convert to local timezone in application layer
 - Use `moment.js` or `date-fns` for consistent date manipulation
 
-### osTicket Backward Compatibility
+### Database Interoperability
 
-Nodeticket maintains compatibility with existing osTicket installations:
-- Connects to existing osTicket v1.8+ databases
-- Reads and writes using the same table structure
-- Supports existing session management
-- Maintains password hash compatibility
+Nodeticket can interoperate with existing osTicket v1.8+ database installations:
+- Connects to existing osTicket databases using compatible table and column names
+- Reads and writes data using the same schema structure
+- Supports existing session management patterns
+- Uses bcrypt password hashing compatible with standard implementations

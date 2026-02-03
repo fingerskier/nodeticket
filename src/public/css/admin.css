@@ -178,6 +178,74 @@ a:hover {
   color: var(--danger-color);
 }
 
+.stat-card.stat-mine {
+  border-left: 3px solid var(--primary-color);
+}
+
+.stat-card.stat-mine .stat-value {
+  color: var(--primary-color);
+}
+
+/* Activity Feed */
+.activity-feed {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.activity-item {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.activity-item:last-child {
+  border-bottom: none;
+}
+
+.activity-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.activity-info a {
+  font-weight: 600;
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+
+.activity-event {
+  display: inline-block;
+  padding: 1px 6px;
+  background: var(--bg-color);
+  border-radius: 3px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.activity-subject {
+  font-size: 0.8rem;
+  color: var(--text-color);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 250px;
+}
+
+.activity-meta {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.empty-text {
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 10px 0;
+}
+
 /* Dashboard Sections */
 .dashboard-sections {
   display: grid;

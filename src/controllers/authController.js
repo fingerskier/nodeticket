@@ -161,9 +161,130 @@ const refresh = async (req, res) => {
   }
 };
 
+/**
+ * Forgot password - generate reset token
+ */
+const forgotPassword = async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    throw ApiError.badRequest('Email is required');
+  }
+
+  // Look up in both user and staff tables
+  let account = null;
+  let resetType = null;
+  let resetId = null;
+
+  // Check staff first
+  const staff = await db.queryOne(
+    `SELECT staff_id, email, firstname, lastname FROM ${db.table('staff')} WHERE email = ? AND isactive = 1`,
+    [email]
+  );
+
+  if (staff) {
+    resetType = 'staff';
+    resetId = staff.staff_id;
+  } else {
+    // Check user accounts
+    account = await db.queryOne(
+      `SELECT u.id as user_id, ue.address as email, u.name
+       FROM ${db.table('user')} u
+       JOIN ${db.table('user_email')} ue ON u.default_email_id = ue.id
+       LEFT JOIN ${db.table('user_account')} ua ON ua.user_id = u.id
+       WHERE ue.address = ? AND ua.status = 1`,
+      [email]
+    );
+
+    if (account) {
+      resetType = 'user';
+      resetId = account.user_id;
+    }
+  }
+
+  // Always return success to prevent email enumeration
+  const genericMessage = 'If an account exists with that email, a password reset link has been generated.';
+
+  if (!resetType) {
+    // No account found — still return success for security
+    return res.json({ success: true, message: genericMessage });
+  }
+
+  // Generate reset token (1 hour expiry)
+  const resetToken = jwt.sign(
+    { id: resetId, type: resetType, purpose: 'password-reset' },
+    config.jwt.secret,
+    { expiresIn: '1h' }
+  );
+
+  const helpdeskUrl = config.helpdesk.url.replace(/\/$/, '');
+  const resetUrl = `${helpdeskUrl}/reset-password?token=${resetToken}`;
+
+  // Log reset link to console (email not configured)
+  console.log(`\n=== PASSWORD RESET ===`);
+  console.log(`Account: ${email} (${resetType})`);
+  console.log(`Reset URL: ${resetUrl}`);
+  console.log(`Expires: 1 hour`);
+  console.log(`======================\n`);
+
+  const response = { success: true, message: genericMessage };
+
+  // In development mode, include the reset URL for easy testing
+  if (config.env === 'development') {
+    response.resetUrl = resetUrl;
+  }
+
+  res.json(response);
+};
+
+/**
+ * Reset password - validate token and update password
+ */
+const resetPassword = async (req, res) => {
+  const { token, password } = req.body;
+
+  if (!token || !password) {
+    throw ApiError.badRequest('Token and new password are required');
+  }
+
+  if (password.length < 6) {
+    throw ApiError.badRequest('Password must be at least 6 characters');
+  }
+
+  let decoded;
+  try {
+    decoded = jwt.verify(token, config.jwt.secret);
+  } catch (err) {
+    throw ApiError.badRequest('Invalid or expired reset token');
+  }
+
+  if (decoded.purpose !== 'password-reset') {
+    throw ApiError.badRequest('Invalid reset token');
+  }
+
+  // Hash the new password
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  if (decoded.type === 'staff') {
+    await db.query(
+      `UPDATE ${db.table('staff')} SET passwd = ?, updated = NOW() WHERE staff_id = ?`,
+      [hashedPassword, decoded.id]
+    );
+  } else {
+    await db.query(
+      `UPDATE ${db.table('user_account')} SET passwd = ? WHERE user_id = ?`,
+      [hashedPassword, decoded.id]
+    );
+  }
+
+  res.json({ success: true, message: 'Password has been reset successfully' });
+};
+
 module.exports = {
   login,
   logout,
   me,
-  refresh
+  refresh,
+  forgotPassword,
+  resetPassword
 };

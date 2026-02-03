@@ -297,7 +297,7 @@ const addNote = async (req, res) => {
 };
 
 /**
- * Create ticket - legacy osTicket API format
+ * Create ticket - legacy interoperability format
  */
 const createLegacy = async (req, res) => {
   throw ApiError.badRequest('Write operations not yet implemented');

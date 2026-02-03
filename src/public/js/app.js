@@ -3,38 +3,58 @@
  */
 
 document.addEventListener('DOMContentLoaded', function() {
-  // Login form handler
-  const loginForm = document.getElementById('loginForm');
-  if (loginForm) {
-    loginForm.addEventListener('submit', async function(e) {
-      // Form will submit normally - this is just for potential future AJAX handling
+  // Tab toggle for login form (user/staff)
+  const tabToggle = document.querySelector('.tab-toggle');
+  if (tabToggle) {
+    const radios = tabToggle.querySelectorAll('input[type="radio"]');
+    radios.forEach(function(radio) {
+      radio.addEventListener('change', function() {
+        tabToggle.querySelectorAll('label').forEach(function(l) { l.classList.remove('active'); });
+        var label = tabToggle.querySelector('label[for="' + radio.id + '"]');
+        if (label) label.classList.add('active');
+      });
+      // Set initial active state
+      if (radio.checked) {
+        var label = tabToggle.querySelector('label[for="' + radio.id + '"]');
+        if (label) label.classList.add('active');
+      }
     });
   }
 
-  // Show error if present in URL
-  const urlParams = new URLSearchParams(window.location.search);
-  const error = urlParams.get('error');
-  if (error) {
-    const errorDiv = document.getElementById('loginError');
-    if (errorDiv) {
-      if (error === 'invalid') {
-        errorDiv.textContent = 'Invalid username or password.';
-      } else if (error === 'server') {
-        errorDiv.textContent = 'A server error occurred. Please try again.';
-      } else {
-        errorDiv.textContent = 'An error occurred. Please try again.';
+  // Password reset form validation
+  var resetForm = document.getElementById('resetForm');
+  if (resetForm) {
+    resetForm.addEventListener('submit', function(e) {
+      var password = document.getElementById('password');
+      var confirm = document.getElementById('confirm');
+      var errorDiv = document.getElementById('resetError');
+
+      if (password && confirm && password.value !== confirm.value) {
+        e.preventDefault();
+        if (errorDiv) {
+          errorDiv.innerHTML = '<div class="alert alert-danger">Passwords do not match.</div>';
+        }
+        return false;
       }
-    }
+
+      if (password && password.value.length < 6) {
+        e.preventDefault();
+        if (errorDiv) {
+          errorDiv.innerHTML = '<div class="alert alert-danger">Password must be at least 6 characters.</div>';
+        }
+        return false;
+      }
+    });
   }
 
-  // FAQ accordion (if needed)
-  const faqItems = document.querySelectorAll('.faq-item');
-  faqItems.forEach(item => {
-    const question = item.querySelector('.faq-question');
+  // FAQ accordion
+  var faqItems = document.querySelectorAll('.faq-item');
+  faqItems.forEach(function(item) {
+    var question = item.querySelector('.faq-question');
     if (question) {
       question.style.cursor = 'pointer';
       question.addEventListener('click', function() {
-        const answer = item.querySelector('.faq-answer');
+        var answer = item.querySelector('.faq-answer');
         if (answer) {
           answer.style.display = answer.style.display === 'none' ? 'block' : 'none';
         }

@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh api:*)",
+      "Bash(curl:*)",
+      "Bash(wc:*)",
+      "Bash(node:*)",
+      "Bash(git -C c:/dev/fingerskier/utility/nodeticket log --oneline --all)",
+      "Bash(git -C c:/dev/fingerskier/utility/nodeticket log --oneline --follow -- docs/mysql.sql)",
+      "Bash(git -C c:/dev/fingerskier/utility/nodeticket log --oneline --follow -- SCHEMA.md)",
+      "Bash(git -C c:/dev/fingerskier/utility/nodeticket show --stat 0d6c84e)",
+      "Bash(git -C c:/dev/fingerskier/utility/nodeticket log --oneline --all -- docs/mysql.sql)",
+      "Bash(git -C c:/dev/fingerskier/utility/nodeticket log --diff-filter=A --oneline -- docs/mysql.sql)",
+      "Bash(git -C c:/dev/fingerskier/utility/nodeticket status docs/mysql.sql)"
+    ]
+  }
+}

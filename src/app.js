@@ -2,7 +2,6 @@
  * Nodeticket - Node.js Help Desk System
  *
  * Main application entry point.
- * Backward compatible with osTicket v1.8+
  */
 
 const express = require('express');
@@ -101,7 +100,7 @@ app.use('/api/v1/faq', faqRoutes);
 app.use('/api/v1/tasks', taskRoutes);
 app.use('/api/v1', systemRoutes);
 
-// osTicket compatibility endpoints
+// Legacy interoperability endpoints
 app.use('/api', ticketRoutes);
 
 // HTML routes

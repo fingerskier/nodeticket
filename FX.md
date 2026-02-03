@@ -1,10 +1,10 @@
 # Nodeticket Business Logic & Operations
 
-This document describes the business logic, operations, and invariants of the Nodeticket help desk system, which is backward compatible with osTicket.
+This document describes the business logic, operations, and invariants of the Nodeticket help desk system, which interoperates with osTicket v1.8+ databases.
 
 ## Overview
 
-Nodeticket is a **Node.js-based** help desk ticketing system designed to be backward compatible with osTicket (v1.8+). It supports both **MySQL** (primary) and **PostgreSQL** databases.
+Nodeticket is a **Node.js-based** help desk ticketing system designed to interoperate with existing ticketing databases.  It supports both **MySQL** (primary) and plans to support **PostgreSQL**.
 
 ### Core Capabilities
 
@@ -22,7 +22,6 @@ Nodeticket is a **Node.js-based** help desk ticketing system designed to be back
 |-----------|------------|
 | Runtime | Node.js |
 | Supported Databases | MySQL, PostgreSQL |
-| Compatibility | osTicket v1.8+ |
 
 ---
 
@@ -52,7 +51,6 @@ The central entity representing a support request.
 | Thread | 1:1 | Communication thread |
 | Lock | 1:1 | Edit lock (when being edited) |
 
-**osTicket Source**: `include/class.ticket.php`
 **Nodeticket Source**: `src/models/ticket.js`
 
 ---
@@ -73,7 +71,6 @@ End-user/client who creates or is associated with tickets.
 | Organization | N:1 | Parent organization |
 | Ticket | 1:N | Owned tickets |
 
-**osTicket Source**: `include/class.user.php`
 **Nodeticket Source**: `src/models/user.js`
 
 ---
@@ -96,7 +93,6 @@ Internal support agent/administrator.
 | StaffDeptAccess | 1:N | Extended department access |
 | Team | N:M | Team memberships |
 
-**osTicket Source**: `include/class.staff.php`
 **Nodeticket Source**: `src/models/staff.js`
 
 ---
@@ -114,7 +110,6 @@ Company or group that users belong to.
 - Domain-based auto-association for new users
 - Custom data via dynamic forms
 
-**osTicket Source**: `include/class.organization.php`
 **Nodeticket Source**: `src/models/organization.js`
 
 ---
@@ -137,7 +132,6 @@ Organizational unit for ticket routing and management.
 | `FLAG_DISABLE_AUTO_CLAIM` | Prevent claim-on-reply |
 | `FLAG_DISABLE_REOPEN_AUTO_ASSIGN` | Prevent auto-assign on reopen |
 
-**osTicket Source**: `include/class.dept.php`
 **Nodeticket Source**: `src/models/department.js`
 
 ---
@@ -156,7 +150,6 @@ Group of staff members for collective assignment.
 | Staff | N:M | Team members |
 | Staff (lead) | N:1 | Team lead |
 
-**osTicket Source**: `include/class.team.php`
 **Nodeticket Source**: `src/models/team.js`
 
 ---
@@ -168,7 +161,6 @@ Permission set for staff access control.
 - `name`: Role name
 - `permissions`: JSON-encoded permission set
 
-**osTicket Source**: `include/class.role.php`
 **Nodeticket Source**: `src/models/role.js`
 
 ---
@@ -190,7 +182,6 @@ Communication container for ticket/task entries.
 | ThreadCollaborator | 1:N | CC'd users |
 | ThreadReferral | 1:N | Cross-references |
 
-**osTicket Source**: `include/class.thread.php`
 **Nodeticket Source**: `src/models/thread.js`
 
 ---
@@ -205,7 +196,6 @@ Individual message within a thread.
 | Response | `R` | From staff |
 | Note | `N` | Internal only |
 
-**osTicket Source**: `include/class.thread.php`
 **Nodeticket Source**: `src/models/threadEntry.js`
 
 ---
@@ -227,7 +217,6 @@ Internal work item, optionally linked to a ticket.
 | Department | N:1 | Owning department |
 | Thread | 1:1 | Communication thread |
 
-**osTicket Source**: `include/class.task.php`
 **Nodeticket Source**: `src/models/task.js`
 
 ---
@@ -247,7 +236,6 @@ Defines response time expectations.
 | `FLAG_NOALERTS` | 4 | Suppress overdue alerts |
 | `FLAG_TRANSIENT` | 8 | Temporary SLA |
 
-**osTicket Source**: `include/class.sla.php`
 **Nodeticket Source**: `src/models/sla.js`
 
 ---
@@ -267,7 +255,6 @@ Ticket categorization and routing configuration.
 - Default assignee (staff or team)
 - Associated forms
 
-**osTicket Source**: `include/class.topic.php`
 **Nodeticket Source**: `src/models/helpTopic.js`
 
 ---
@@ -293,7 +280,6 @@ Email/ticket routing rules.
 | `match` | Regex match |
 | `not_match` | Regex not match |
 
-**osTicket Source**: `include/class.filter.php`
 **Nodeticket Source**: `src/models/filter.js`
 
 ---
@@ -1074,7 +1060,7 @@ router.post('/cron', apiKeyAuth, async (req, res) => {
 
 ## API
 
-Nodeticket provides a RESTful API compatible with osTicket's API, plus additional endpoints.
+Nodeticket provides a RESTful API with endpoints for all system functionality.
 
 ### Ticket API
 
@@ -1090,7 +1076,7 @@ Nodeticket provides a RESTful API compatible with osTicket's API, plus additiona
 | POST | /tickets/:id/reply | Post reply |
 | POST | /tickets/:id/note | Add internal note |
 
-**osTicket Compatibility Endpoints**:
+**Legacy Interoperability Endpoints**:
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | /tickets.json | Create ticket (legacy) |
@@ -1340,7 +1326,7 @@ Nodeticket uses environment variables and the database `config` table for config
 | `DB_DIALECT` | Database type (mysql/postgres) | mysql |
 | `DB_HOST` | Database host | localhost |
 | `DB_PORT` | Database port | 3306 (MySQL) / 5432 (PostgreSQL) |
-| `DB_NAME` | Database name | osticket |
+| `DB_NAME` | Database name | original |
 | `DB_USER` | Database username | - |
 | `DB_PASSWORD` | Database password | - |
 | `TABLE_PREFIX` | Table prefix | ost_ |

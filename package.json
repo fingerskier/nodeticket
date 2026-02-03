@@ -1,7 +1,7 @@
 {
   "name": "nodeticket",
   "version": "1.0.0",
-  "description": "Node.js help desk ticketing system - backward compatible with osTicket v1.8+",
+  "description": "Node.js help desk ticketing system with osTicket database interoperability",
   "main": "src/app.js",
   "scripts": {
     "start": "node src/app.js",

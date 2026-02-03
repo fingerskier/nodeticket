@@ -32,7 +32,7 @@ router.post('/:id/reply', authenticate, canAccessTicket, asyncHandler(ticketCont
 // POST /api/v1/tickets/:id/note - Add internal note
 router.post('/:id/note', authenticate, canAccessTicket, asyncHandler(ticketController.addNote));
 
-// osTicket compatibility endpoints
+// Legacy interoperability endpoints
 router.post('/tickets.json', asyncHandler(ticketController.createLegacy));
 
 module.exports = router;

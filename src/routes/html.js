@@ -77,56 +77,142 @@ const renderPage = (title, content, base) => `
 `;
 
 /**
- * Home page
+ * Home page / User Dashboard
  */
 router.get('/', asyncHandler(async (req, res) => {
   const base = await getBaseData(req);
 
-  let statsHtml = '';
-  if (req.session?.user) {
-    try {
-      const userId = req.session.user.id;
-      const openTickets = await db.queryValue(`
-        SELECT COUNT(*) FROM ${db.table('ticket')} t
-        JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id
-        WHERE t.user_id = ? AND ts.state = 'open'
-      `, [userId]);
+  if (!req.session?.user) {
+    const content = `
+      <div class="hero">
+        <h1>Welcome to ${base.title}</h1>
+        <p>How can we help you today?</p>
+      </div>
+      <div class="login-prompt">
+        <p>Please <a href="/login">sign in</a> to view your tickets or submit a new request.</p>
+      </div>
+    `;
+    return res.send(renderPage('Home', content, base));
+  }
 
-      statsHtml = `
-        <div class="stats-card">
-          <h3>Your Open Tickets</h3>
-          <p class="stat-number">${openTickets || 0}</p>
-          <a href="/tickets" class="btn btn-primary">View Tickets</a>
-        </div>
-      `;
-    } catch (e) {
-      // Ignore database errors
-    }
+  // Redirect staff to admin dashboard
+  if (req.session.user.type === 'staff') {
+    return res.redirect('/admin');
+  }
+
+  const userId = req.session.user.id;
+  let openCount = 0, closedCount = 0, awaitingReply = 0;
+  let recentTickets = [];
+
+  try {
+    // Open ticket count
+    openCount = await db.queryValue(`
+      SELECT COUNT(*) FROM ${db.table('ticket')} t
+      JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id
+      WHERE t.user_id = ? AND ts.state = 'open'
+    `, [userId]) || 0;
+
+    // Closed ticket count
+    closedCount = await db.queryValue(`
+      SELECT COUNT(*) FROM ${db.table('ticket')} t
+      JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id
+      WHERE t.user_id = ? AND ts.state = 'closed'
+    `, [userId]) || 0;
+
+    // Awaiting reply: open tickets where the latest thread entry is a response (R) from staff
+    awaitingReply = await db.queryValue(`
+      SELECT COUNT(*) FROM ${db.table('ticket')} t
+      JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id
+      JOIN ${db.table('thread')} th ON th.object_id = t.ticket_id AND th.object_type = 'T'
+      WHERE t.user_id = ? AND ts.state = 'open'
+        AND EXISTS (
+          SELECT 1 FROM ${db.table('thread_entry')} te
+          WHERE te.thread_id = th.id AND te.type = 'R'
+          AND te.id = (
+            SELECT MAX(te2.id) FROM ${db.table('thread_entry')} te2
+            WHERE te2.thread_id = th.id AND te2.type IN ('M', 'R')
+          )
+        )
+    `, [userId]) || 0;
+
+    // Recent tickets (last 5 updated)
+    recentTickets = await db.query(`
+      SELECT t.ticket_id, t.number, t.created, t.lastupdate,
+             ts.name as status_name, ts.state as status_state,
+             tc.subject, d.name as dept_name
+      FROM ${db.table('ticket')} t
+      LEFT JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id
+      LEFT JOIN ${db.table('ticket__cdata')} tc ON t.ticket_id = tc.ticket_id
+      LEFT JOIN ${db.table('department')} d ON t.dept_id = d.id
+      WHERE t.user_id = ?
+      ORDER BY COALESCE(t.lastupdate, t.created) DESC
+      LIMIT 5
+    `, [userId]);
+  } catch (e) {
+    console.error('Dashboard query error:', e);
+  }
+
+  const totalTickets = openCount + closedCount;
+
+  let recentHtml = '';
+  if (recentTickets.length > 0) {
+    recentHtml = `
+      <div class="recent-tickets">
+        <h3>Recent Tickets</h3>
+        ${recentTickets.map(t => `
+          <div class="recent-ticket-item">
+            <div class="recent-ticket-info">
+              <a href="/tickets/${t.ticket_id}">#${t.number} - ${escapeHtml(t.subject || 'No Subject')}</a>
+              <div class="recent-ticket-meta">${escapeHtml(t.dept_name || '')} &middot; ${formatDate(t.lastupdate || t.created)}</div>
+            </div>
+            <div class="recent-ticket-status">
+              <span class="status status-${t.status_state}">${t.status_name}</span>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  } else {
+    recentHtml = `
+      <div class="empty-state">
+        <p>No tickets yet.</p>
+      </div>
+    `;
   }
 
   const content = `
-    <div class="hero">
-      <h1>Welcome to ${base.title}</h1>
-      <p>How can we help you today?</p>
+    <div class="section-header">
+      <h2>Dashboard</h2>
     </div>
 
-    ${req.session?.user ? `
-      <div class="dashboard">
-        ${statsHtml}
-        <div class="quick-actions">
-          <h3>Quick Actions</h3>
-          <a href="/tickets" class="btn">View My Tickets</a>
-          ${base.enableKB ? '<a href="/faq" class="btn">Browse Knowledge Base</a>' : ''}
-        </div>
+    <div class="dashboard-grid">
+      <div class="stat-card">
+        <div class="stat-number">${openCount}</div>
+        <div class="stat-label">Open Tickets</div>
       </div>
-    ` : `
-      <div class="login-prompt">
-        <p>Please <a href="/login">login</a> to view your tickets or submit a new request.</p>
+      <div class="stat-card stat-warning">
+        <div class="stat-number">${awaitingReply}</div>
+        <div class="stat-label">Awaiting Reply</div>
       </div>
-    `}
+      <div class="stat-card stat-success">
+        <div class="stat-number">${closedCount}</div>
+        <div class="stat-label">Closed</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-number">${totalTickets}</div>
+        <div class="stat-label">Total Tickets</div>
+      </div>
+    </div>
+
+    <div class="quick-actions-row">
+      <a href="/tickets" class="btn btn-primary">View All Tickets</a>
+      ${base.enableKB ? '<a href="/faq" class="btn">Knowledge Base</a>' : ''}
+    </div>
+
+    ${recentHtml}
   `;
 
-  res.send(renderPage('Home', content, base));
+  res.send(renderPage('Dashboard', content, base));
 }));
 
 /**
@@ -136,32 +222,41 @@ router.get('/login', asyncHandler(async (req, res) => {
   const base = await getBaseData(req);
 
   if (req.session?.user) {
-    return res.redirect('/tickets');
+    return res.redirect(req.session.user.type === 'staff' ? '/admin' : '/');
+  }
+
+  const error = req.query.error;
+  let errorHtml = '';
+  if (error === 'invalid') {
+    errorHtml = '<div class="alert alert-danger">Invalid username or password.</div>';
+  } else if (error === 'server') {
+    errorHtml = '<div class="alert alert-danger">A server error occurred. Please try again.</div>';
   }
 
   const content = `
     <div class="auth-form">
-      <h2>Login</h2>
+      <h2>Sign In</h2>
+      ${errorHtml}
       <form action="/login" method="POST" id="loginForm">
+        <div class="tab-toggle">
+          <input type="radio" name="type" value="user" id="type-user" checked>
+          <label for="type-user">User Portal</label>
+          <input type="radio" name="type" value="staff" id="type-staff">
+          <label for="type-staff">Staff Portal</label>
+        </div>
         <div class="form-group">
           <label for="username">Username or Email</label>
-          <input type="text" id="username" name="username" required>
+          <input type="text" id="username" name="username" required autocomplete="username">
         </div>
         <div class="form-group">
           <label for="password">Password</label>
-          <input type="password" id="password" name="password" required>
+          <input type="password" id="password" name="password" required autocomplete="current-password">
         </div>
-        <div class="form-group">
-          <label>
-            <input type="radio" name="type" value="user" checked> User Portal
-          </label>
-          <label>
-            <input type="radio" name="type" value="staff"> Staff Portal
-          </label>
-        </div>
-        <div class="form-error" id="loginError"></div>
-        <button type="submit" class="btn btn-primary">Login</button>
+        <button type="submit" class="btn btn-primary" style="width:100%">Sign In</button>
       </form>
+      <p style="text-align:center; margin-top:16px; font-size:0.875rem">
+        <a href="/forgot-password">Forgot your password?</a>
+      </p>
     </div>
   `;
 
@@ -238,6 +333,264 @@ router.post('/login', express.urlencoded({ extended: true }), asyncHandler(async
     console.error('Login error:', e);
     return res.redirect('/login?error=server');
   }
+}));
+
+/**
+ * Forgot password page
+ */
+router.get('/forgot-password', asyncHandler(async (req, res) => {
+  const base = await getBaseData(req);
+
+  const content = `
+    <div class="auth-form">
+      <h2>Reset Password</h2>
+      <p style="color: var(--text-muted); margin-bottom: 20px; font-size: 0.875rem;">
+        Enter your email address and we'll send you a link to reset your password.
+      </p>
+      <div id="resetMessage"></div>
+      <form action="/forgot-password" method="POST" id="forgotForm">
+        <div class="form-group">
+          <label for="email">Email Address</label>
+          <input type="email" id="email" name="email" required autocomplete="email">
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%">Send Reset Link</button>
+      </form>
+      <p style="text-align:center; margin-top:16px; font-size:0.875rem">
+        <a href="/login">&larr; Back to Login</a>
+      </p>
+    </div>
+  `;
+
+  res.send(renderPage('Forgot Password', content, base));
+}));
+
+/**
+ * Handle forgot password
+ */
+router.post('/forgot-password', express.urlencoded({ extended: true }), asyncHandler(async (req, res) => {
+  const base = await getBaseData(req);
+  const { email } = req.body;
+
+  const bcrypt = require('bcryptjs');
+  const jwt = require('jsonwebtoken');
+  const config = require('../config');
+
+  let resetUrl = null;
+
+  if (email) {
+    // Check staff
+    const staff = await db.queryOne(
+      `SELECT staff_id, email FROM ${db.table('staff')} WHERE email = ? AND isactive = 1`,
+      [email]
+    );
+
+    let resetType = null;
+    let resetId = null;
+
+    if (staff) {
+      resetType = 'staff';
+      resetId = staff.staff_id;
+    } else {
+      const account = await db.queryOne(
+        `SELECT u.id as user_id, ue.address as email
+         FROM ${db.table('user')} u
+         JOIN ${db.table('user_email')} ue ON u.default_email_id = ue.id
+         LEFT JOIN ${db.table('user_account')} ua ON ua.user_id = u.id
+         WHERE ue.address = ? AND ua.status = 1`,
+        [email]
+      );
+
+      if (account) {
+        resetType = 'user';
+        resetId = account.user_id;
+      }
+    }
+
+    if (resetType) {
+      const resetToken = jwt.sign(
+        { id: resetId, type: resetType, purpose: 'password-reset' },
+        config.jwt.secret,
+        { expiresIn: '1h' }
+      );
+
+      const helpdeskUrl = config.helpdesk.url.replace(/\/$/, '');
+      resetUrl = `${helpdeskUrl}/reset-password?token=${resetToken}`;
+
+      console.log(`\n=== PASSWORD RESET ===`);
+      console.log(`Account: ${email} (${resetType})`);
+      console.log(`Reset URL: ${resetUrl}`);
+      console.log(`Expires: 1 hour`);
+      console.log(`======================\n`);
+    }
+  }
+
+  let messageHtml = '<div class="alert alert-success">If an account exists with that email, a password reset link has been generated.</div>';
+
+  // In development mode, show the reset link directly
+  if (config.env === 'development' && resetUrl) {
+    messageHtml += `<div class="alert alert-info">
+      <strong>Dev mode:</strong> <a href="${resetUrl}">Click here to reset password</a>
+    </div>`;
+  }
+
+  const content = `
+    <div class="auth-form">
+      <h2>Reset Password</h2>
+      ${messageHtml}
+      <p style="text-align:center; margin-top:16px; font-size:0.875rem">
+        <a href="/login">&larr; Back to Login</a>
+      </p>
+    </div>
+  `;
+
+  res.send(renderPage('Forgot Password', content, base));
+}));
+
+/**
+ * Reset password page
+ */
+router.get('/reset-password', asyncHandler(async (req, res) => {
+  const base = await getBaseData(req);
+  const { token } = req.query;
+
+  if (!token) {
+    const content = `
+      <div class="auth-form">
+        <h2>Reset Password</h2>
+        <div class="alert alert-danger">Invalid or missing reset token. Please request a new password reset.</div>
+        <p style="text-align:center; margin-top:16px; font-size:0.875rem">
+          <a href="/forgot-password">Request Password Reset</a>
+        </p>
+      </div>
+    `;
+    return res.send(renderPage('Reset Password', content, base));
+  }
+
+  // Validate token before showing form
+  const jwt = require('jsonwebtoken');
+  const config = require('../config');
+  try {
+    const decoded = jwt.verify(token, config.jwt.secret);
+    if (decoded.purpose !== 'password-reset') {
+      throw new Error('Invalid token purpose');
+    }
+  } catch (e) {
+    const content = `
+      <div class="auth-form">
+        <h2>Reset Password</h2>
+        <div class="alert alert-danger">This reset link is invalid or has expired. Please request a new one.</div>
+        <p style="text-align:center; margin-top:16px; font-size:0.875rem">
+          <a href="/forgot-password">Request Password Reset</a>
+        </p>
+      </div>
+    `;
+    return res.send(renderPage('Reset Password', content, base));
+  }
+
+  const content = `
+    <div class="auth-form">
+      <h2>Set New Password</h2>
+      <div id="resetError"></div>
+      <form action="/reset-password" method="POST" id="resetForm">
+        <input type="hidden" name="token" value="${escapeHtml(token)}">
+        <div class="form-group">
+          <label for="password">New Password</label>
+          <input type="password" id="password" name="password" required minlength="6" autocomplete="new-password">
+        </div>
+        <div class="form-group">
+          <label for="confirm">Confirm Password</label>
+          <input type="password" id="confirm" name="confirm" required minlength="6" autocomplete="new-password">
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%">Reset Password</button>
+      </form>
+    </div>
+  `;
+
+  res.send(renderPage('Reset Password', content, base));
+}));
+
+/**
+ * Handle password reset
+ */
+router.post('/reset-password', express.urlencoded({ extended: true }), asyncHandler(async (req, res) => {
+  const base = await getBaseData(req);
+  const { token, password, confirm } = req.body;
+
+  if (!token || !password) {
+    const content = `
+      <div class="auth-form">
+        <h2>Reset Password</h2>
+        <div class="alert alert-danger">Missing required fields.</div>
+        <p style="text-align:center; margin-top:16px"><a href="/forgot-password">Try Again</a></p>
+      </div>
+    `;
+    return res.send(renderPage('Reset Password', content, base));
+  }
+
+  if (password !== confirm) {
+    const content = `
+      <div class="auth-form">
+        <h2>Reset Password</h2>
+        <div class="alert alert-danger">Passwords do not match.</div>
+        <p style="text-align:center; margin-top:16px"><a href="/reset-password?token=${escapeHtml(token)}">Try Again</a></p>
+      </div>
+    `;
+    return res.send(renderPage('Reset Password', content, base));
+  }
+
+  if (password.length < 6) {
+    const content = `
+      <div class="auth-form">
+        <h2>Reset Password</h2>
+        <div class="alert alert-danger">Password must be at least 6 characters.</div>
+        <p style="text-align:center; margin-top:16px"><a href="/reset-password?token=${escapeHtml(token)}">Try Again</a></p>
+      </div>
+    `;
+    return res.send(renderPage('Reset Password', content, base));
+  }
+
+  const jwt = require('jsonwebtoken');
+  const bcrypt = require('bcryptjs');
+  const config = require('../config');
+
+  let decoded;
+  try {
+    decoded = jwt.verify(token, config.jwt.secret);
+    if (decoded.purpose !== 'password-reset') throw new Error('Invalid token');
+  } catch (e) {
+    const content = `
+      <div class="auth-form">
+        <h2>Reset Password</h2>
+        <div class="alert alert-danger">This reset link is invalid or has expired.</div>
+        <p style="text-align:center; margin-top:16px"><a href="/forgot-password">Request New Reset</a></p>
+      </div>
+    `;
+    return res.send(renderPage('Reset Password', content, base));
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  if (decoded.type === 'staff') {
+    await db.query(
+      `UPDATE ${db.table('staff')} SET passwd = ?, updated = NOW() WHERE staff_id = ?`,
+      [hashedPassword, decoded.id]
+    );
+  } else {
+    await db.query(
+      `UPDATE ${db.table('user_account')} SET passwd = ? WHERE user_id = ?`,
+      [hashedPassword, decoded.id]
+    );
+  }
+
+  const content = `
+    <div class="auth-form">
+      <h2>Password Reset</h2>
+      <div class="alert alert-success">Your password has been reset successfully.</div>
+      <a href="/login" class="btn btn-primary" style="width:100%; text-align:center; display:block">Sign In</a>
+    </div>
+  `;
+
+  res.send(renderPage('Password Reset', content, base));
 }));
 
 /**

@@ -20,4 +20,10 @@ router.get('/me', authenticate, asyncHandler(authController.me));
 // POST /api/v1/auth/refresh - Refresh token
 router.post('/refresh', asyncHandler(authController.refresh));
 
+// POST /api/v1/auth/forgot-password - Request password reset
+router.post('/forgot-password', asyncHandler(authController.forgotPassword));
+
+// POST /api/v1/auth/reset-password - Reset password with token
+router.post('/reset-password', asyncHandler(authController.resetPassword));
+
 module.exports = router;

@@ -94,33 +94,58 @@ const renderAdminPage = (title, content, base, activeNav = '') => `
 `;
 
 /**
+ * Helper functions
+ */
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatDate(date) {
+  if (!date) return 'N/A';
+  return new Date(date).toLocaleString();
+}
+
+/**
  * Dashboard
  */
 router.get('/', asyncHandler(async (req, res) => {
   const base = await getAdminData(req);
+  const staffId = req.session.user.id;
 
   let stats = {
     openTickets: 0,
     overdueTickets: 0,
     unassignedTickets: 0,
+    myTickets: 0,
     todayTickets: 0,
-    users: 0,
-    staff: 0
+    users: 0
   };
 
+  let recentActivity = [];
+  let deptBreakdown = [];
+
   try {
+    // Core ticket stats
     const ticketStats = await db.queryOne(`
       SELECT
         SUM(CASE WHEN ts.state = 'open' THEN 1 ELSE 0 END) as open_count,
         SUM(CASE WHEN t.isoverdue = 1 AND ts.state = 'open' THEN 1 ELSE 0 END) as overdue_count,
-        SUM(CASE WHEN t.staff_id = 0 AND ts.state = 'open' THEN 1 ELSE 0 END) as unassigned_count
+        SUM(CASE WHEN t.staff_id = 0 AND ts.state = 'open' THEN 1 ELSE 0 END) as unassigned_count,
+        SUM(CASE WHEN t.staff_id = ? AND ts.state = 'open' THEN 1 ELSE 0 END) as my_count
       FROM ${db.table('ticket')} t
       JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id
-    `);
+    `, [staffId]);
 
     stats.openTickets = parseInt(ticketStats?.open_count || 0, 10);
     stats.overdueTickets = parseInt(ticketStats?.overdue_count || 0, 10);
     stats.unassignedTickets = parseInt(ticketStats?.unassigned_count || 0, 10);
+    stats.myTickets = parseInt(ticketStats?.my_count || 0, 10);
 
     stats.todayTickets = parseInt(await db.queryValue(`
       SELECT COUNT(*) FROM ${db.table('ticket')} WHERE DATE(created) = CURDATE()
@@ -130,11 +155,80 @@ router.get('/', asyncHandler(async (req, res) => {
       SELECT COUNT(*) FROM ${db.table('user')}
     `) || 0, 10);
 
-    stats.staff = parseInt(await db.queryValue(`
-      SELECT COUNT(*) FROM ${db.table('staff')} WHERE isactive = 1
-    `) || 0, 10);
+    // Recent activity: last 10 thread events
+    recentActivity = await db.query(`
+      SELECT te.*, t.number as ticket_number, t.ticket_id,
+             tc.subject as ticket_subject,
+             CONCAT(s.firstname, ' ', s.lastname) as staff_name
+      FROM ${db.table('thread_event')} te
+      JOIN ${db.table('thread')} th ON te.thread_id = th.id
+      JOIN ${db.table('ticket')} t ON th.object_id = t.ticket_id AND th.object_type = 'T'
+      LEFT JOIN ${db.table('ticket__cdata')} tc ON t.ticket_id = tc.ticket_id
+      LEFT JOIN ${db.table('staff')} s ON te.staff_id = s.staff_id
+      ORDER BY te.timestamp DESC
+      LIMIT 10
+    `);
+
+    // Department breakdown
+    deptBreakdown = await db.query(`
+      SELECT d.id, d.name,
+             COUNT(CASE WHEN ts.state = 'open' THEN 1 END) as open_count,
+             COUNT(t.ticket_id) as total_count
+      FROM ${db.table('department')} d
+      LEFT JOIN ${db.table('ticket')} t ON t.dept_id = d.id
+      LEFT JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id
+      GROUP BY d.id, d.name
+      ORDER BY open_count DESC
+    `);
   } catch (e) {
-    console.error('Error loading stats:', e);
+    console.error('Error loading dashboard:', e);
+  }
+
+  // Build recent activity HTML
+  let activityHtml = '';
+  if (recentActivity.length > 0) {
+    activityHtml = recentActivity.map(a => `
+      <div class="activity-item">
+        <div class="activity-info">
+          <a href="/admin/tickets/${a.ticket_id}">#${a.ticket_number}</a>
+          <span class="activity-event">${escapeHtml(a.state || a.type || 'update')}</span>
+          ${a.ticket_subject ? `<span class="activity-subject">${escapeHtml(a.ticket_subject)}</span>` : ''}
+        </div>
+        <div class="activity-meta">
+          ${a.staff_name && a.staff_name.trim() ? escapeHtml(a.staff_name) : 'System'}
+          &middot; ${formatDate(a.timestamp)}
+        </div>
+      </div>
+    `).join('');
+  } else {
+    activityHtml = '<p class="empty-text">No recent activity.</p>';
+  }
+
+  // Build department breakdown HTML
+  let deptHtml = '';
+  if (deptBreakdown.length > 0) {
+    deptHtml = `
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Department</th>
+            <th>Open</th>
+            <th>Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${deptBreakdown.map(d => `
+            <tr>
+              <td>${escapeHtml(d.name)}</td>
+              <td><strong>${d.open_count || 0}</strong></td>
+              <td>${d.total_count || 0}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  } else {
+    deptHtml = '<p class="empty-text">No departments found.</p>';
   }
 
   const content = `
@@ -151,17 +245,17 @@ router.get('/', asyncHandler(async (req, res) => {
         <div class="stat-value">${stats.unassignedTickets}</div>
         <div class="stat-label">Unassigned</div>
       </div>
+      <div class="stat-card stat-mine">
+        <div class="stat-value">${stats.myTickets}</div>
+        <div class="stat-label">My Tickets</div>
+      </div>
       <div class="stat-card">
         <div class="stat-value">${stats.todayTickets}</div>
-        <div class="stat-label">Today's Tickets</div>
+        <div class="stat-label">Today</div>
       </div>
       <div class="stat-card">
         <div class="stat-value">${stats.users}</div>
         <div class="stat-label">Users</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">${stats.staff}</div>
-        <div class="stat-label">Active Staff</div>
       </div>
     </div>
 
@@ -169,10 +263,25 @@ router.get('/', asyncHandler(async (req, res) => {
       <section class="dashboard-section">
         <h2>Quick Actions</h2>
         <div class="quick-actions">
-          <a href="/admin/tickets" class="action-btn">View All Tickets</a>
-          <a href="/admin/tickets?status=open&staff=unassigned" class="action-btn">Unassigned Tickets</a>
-          <a href="/admin/tickets?status=overdue" class="action-btn">Overdue Tickets</a>
+          <a href="/admin/tickets" class="action-btn">All Tickets</a>
+          <a href="/admin/tickets?staff_id=${staffId}" class="action-btn">My Tickets</a>
+          <a href="/admin/tickets?status=open&staff=unassigned" class="action-btn">Unassigned</a>
+          <a href="/admin/tickets?status=overdue" class="action-btn">Overdue</a>
         </div>
+      </section>
+
+      <section class="dashboard-section">
+        <h2>Recent Activity</h2>
+        <div class="activity-feed">
+          ${activityHtml}
+        </div>
+      </section>
+    </div>
+
+    <div class="dashboard-sections" style="margin-top: 20px">
+      <section class="dashboard-section">
+        <h2>Tickets by Department</h2>
+        ${deptHtml}
       </section>
     </div>
   `;
