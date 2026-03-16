@@ -12,10 +12,11 @@ const session = require('express-session');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 
+const cookieParser = require('cookie-parser');
 const config = require('./config');
 const db = require('./lib/db');
 const { notFoundHandler, errorHandler } = require('./middleware/errorHandler');
-const { generateToken, csrfProtection } = require('./middleware/csrf');
+const { generateCsrfToken, csrfProtection } = require('./middleware/csrf');
 
 // Import routes
 const authRoutes = require('./routes/auth');
@@ -72,6 +73,9 @@ app.use(session({
   }
 }));
 
+// Cookie parser (needed for CSRF double-submit cookie)
+app.use(cookieParser());
+
 // Static files
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -107,7 +111,7 @@ app.use('/api', ticketRoutes);
 
 // CSRF token generator (available to all HTML routes including admin)
 app.use((req, res, next) => {
-  req.csrfToken = () => generateToken(req, res);
+  req.csrfToken = () => generateCsrfToken(req, res);
   next();
 });
 

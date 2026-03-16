@@ -99,7 +99,12 @@ const renderSPA = (base) => `
 /**
  * Legacy render for non-SPA pages (login form fallback)
  */
-const renderPage = (title, content, base) => `
+const renderPage = (title, content, base) => {
+  const userNav = base.user
+    ? `<span class="user-info">${base.user.name}</span><a href="/logout">Logout</a>`
+    : '<a href="/login">Login</a>';
+
+  return `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -117,17 +122,14 @@ const renderPage = (title, content, base) => `
           <a href="/">Home</a>
           <a href="/tickets">My Tickets</a>
           ${base.enableKB ? '<a href="/faq">Knowledge Base</a>' : ''}
-          ${base.user
-            ? \`<span class="user-info">\${base.user.name}</span>
-               <a href="/logout">Logout</a>\`
-            : '<a href="/login">Login</a>'}
+          ${userNav}
         </nav>
       </div>
     </div>
   </header>
   <main class="main">
     <div class="container">
-      \${content}
+      ${content}
     </div>
   </main>
   <footer class="footer">
@@ -139,6 +141,7 @@ const renderPage = (title, content, base) => `
 </body>
 </html>
 `;
+};
 
 /**
  * Home page - Serves SPA

@@ -1,6 +1,6 @@
 {
   "name": "nodeticket",
-  "version": "1.0.0",
+  "version": "2026.3.1",
   "description": "Node.js help desk ticketing system with osTicket database interoperability",
   "main": "src/app.js",
   "scripts": {
@@ -15,13 +15,14 @@
     "osticket",
     "customer-service"
   ],
-  "author": "",
+  "author": "fingerskier",
   "license": "MIT",
   "dependencies": {
     "@aws-sdk/client-ses": "^3.1009.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "bcryptjs": "^2.4.3",
     "compression": "^1.7.4",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "csrf-csrf": "^4.0.3",
     "dotenv": "^16.3.1",

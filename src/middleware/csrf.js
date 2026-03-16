@@ -1,8 +1,9 @@
 const { doubleCsrf } = require('csrf-csrf');
 const config = require('../config');
 
-const { generateToken, doubleCsrfProtection } = doubleCsrf({
+const { generateCsrfToken, doubleCsrfProtection } = doubleCsrf({
   getSecret: () => config.session.secret,
+  getSessionIdentifier: (req) => req.session?.id || '',
   cookieName: '__csrf',
   cookieOptions: {
     httpOnly: true,
@@ -10,9 +11,20 @@ const { generateToken, doubleCsrfProtection } = doubleCsrf({
     secure: config.env === 'production',
     path: '/'
   },
-  getTokenFromRequest: (req) => {
+  getCsrfTokenFromRequest: (req) => {
     return req.body?._csrf || req.headers['x-csrf-token'];
   }
 });
 
-module.exports = { generateToken, csrfProtection: doubleCsrfProtection };
+// Wrapper that ensures req.cookies exists before csrf-csrf runs
+const csrfProtection = (req, res, next) => {
+  if (!req.cookies) req.cookies = {};
+  doubleCsrfProtection(req, res, next);
+};
+
+const safeGenerateCsrfToken = (req, res) => {
+  if (!req.cookies) req.cookies = {};
+  return generateCsrfToken(req, res);
+};
+
+module.exports = { generateCsrfToken: safeGenerateCsrfToken, csrfProtection };
