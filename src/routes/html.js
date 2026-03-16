@@ -76,7 +76,9 @@ const renderSPA = (base) => `
     window.APP_CONFIG = {
       title: ${JSON.stringify(base.title)},
       user: ${JSON.stringify(base.user)},
-      enableKB: ${base.enableKB}
+      enableKB: ${base.enableKB},
+      csrfToken: ${JSON.stringify(base.csrfToken || '')},
+      idleTimeout: ${require('../config').session.idleTimeout}
     };
   </script>
 
@@ -139,150 +141,12 @@ const renderPage = (title, content, base) => `
 `;
 
 /**
-<<<<<<< HEAD
- * Home page / User Dashboard
- */
-router.get('/', asyncHandler(async (req, res) => {
-  const base = await getBaseData(req);
-
-  if (!req.session?.user) {
-    const content = `
-      <div class="hero">
-        <h1>Welcome to ${base.title}</h1>
-        <p>How can we help you today?</p>
-      </div>
-      <div class="login-prompt">
-        <p>Please <a href="/login">sign in</a> to view your tickets or submit a new request.</p>
-      </div>
-    `;
-    return res.send(renderPage('Home', content, base));
-  }
-
-  // Redirect staff to admin dashboard
-  if (req.session.user.type === 'staff') {
-    return res.redirect('/admin');
-  }
-
-  const userId = req.session.user.id;
-  let openCount = 0, closedCount = 0, awaitingReply = 0;
-  let recentTickets = [];
-
-  try {
-    // Open ticket count
-    openCount = await db.queryValue(`
-      SELECT COUNT(*) FROM ${db.table('ticket')} t
-      JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id
-      WHERE t.user_id = ? AND ts.state = 'open'
-    `, [userId]) || 0;
-
-    // Closed ticket count
-    closedCount = await db.queryValue(`
-      SELECT COUNT(*) FROM ${db.table('ticket')} t
-      JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id
-      WHERE t.user_id = ? AND ts.state = 'closed'
-    `, [userId]) || 0;
-
-    // Awaiting reply: open tickets where the latest thread entry is a response (R) from staff
-    awaitingReply = await db.queryValue(`
-      SELECT COUNT(*) FROM ${db.table('ticket')} t
-      JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id
-      JOIN ${db.table('thread')} th ON th.object_id = t.ticket_id AND th.object_type = 'T'
-      WHERE t.user_id = ? AND ts.state = 'open'
-        AND EXISTS (
-          SELECT 1 FROM ${db.table('thread_entry')} te
-          WHERE te.thread_id = th.id AND te.type = 'R'
-          AND te.id = (
-            SELECT MAX(te2.id) FROM ${db.table('thread_entry')} te2
-            WHERE te2.thread_id = th.id AND te2.type IN ('M', 'R')
-          )
-        )
-    `, [userId]) || 0;
-
-    // Recent tickets (last 5 updated)
-    recentTickets = await db.query(`
-      SELECT t.ticket_id, t.number, t.created, t.lastupdate,
-             ts.name as status_name, ts.state as status_state,
-             tc.subject, d.name as dept_name
-      FROM ${db.table('ticket')} t
-      LEFT JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id
-      LEFT JOIN ${db.table('ticket__cdata')} tc ON t.ticket_id = tc.ticket_id
-      LEFT JOIN ${db.table('department')} d ON t.dept_id = d.id
-      WHERE t.user_id = ?
-      ORDER BY COALESCE(t.lastupdate, t.created) DESC
-      LIMIT 5
-    `, [userId]);
-  } catch (e) {
-    console.error('Dashboard query error:', e);
-  }
-
-  const totalTickets = openCount + closedCount;
-
-  let recentHtml = '';
-  if (recentTickets.length > 0) {
-    recentHtml = `
-      <div class="recent-tickets">
-        <h3>Recent Tickets</h3>
-        ${recentTickets.map(t => `
-          <div class="recent-ticket-item">
-            <div class="recent-ticket-info">
-              <a href="/tickets/${t.ticket_id}">#${t.number} - ${escapeHtml(t.subject || 'No Subject')}</a>
-              <div class="recent-ticket-meta">${escapeHtml(t.dept_name || '')} &middot; ${formatDate(t.lastupdate || t.created)}</div>
-            </div>
-            <div class="recent-ticket-status">
-              <span class="status status-${t.status_state}">${t.status_name}</span>
-            </div>
-          </div>
-        `).join('')}
-      </div>
-    `;
-  } else {
-    recentHtml = `
-      <div class="empty-state">
-        <p>No tickets yet.</p>
-      </div>
-    `;
-  }
-
-  const content = `
-    <div class="section-header">
-      <h2>Dashboard</h2>
-    </div>
-
-    <div class="dashboard-grid">
-      <div class="stat-card">
-        <div class="stat-number">${openCount}</div>
-        <div class="stat-label">Open Tickets</div>
-      </div>
-      <div class="stat-card stat-warning">
-        <div class="stat-number">${awaitingReply}</div>
-        <div class="stat-label">Awaiting Reply</div>
-      </div>
-      <div class="stat-card stat-success">
-        <div class="stat-number">${closedCount}</div>
-        <div class="stat-label">Closed</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-number">${totalTickets}</div>
-        <div class="stat-label">Total Tickets</div>
-      </div>
-    </div>
-
-    <div class="quick-actions-row">
-      <a href="/tickets" class="btn btn-primary">View All Tickets</a>
-      ${base.enableKB ? '<a href="/faq" class="btn">Knowledge Base</a>' : ''}
-    </div>
-
-    ${recentHtml}
-  `;
-
-  res.send(renderPage('Dashboard', content, base));
-=======
  * Home page - Serves SPA
  */
 router.get('/', asyncHandler(async (req, res) => {
   const base = await getBaseData(req);
+  base.csrfToken = req.csrfToken ? req.csrfToken() : '';
   res.send(renderSPA(base));
->>>>>>> 19b3b805ece5dc4fb273d3a79aabecd048db9e81
 }));
 
 /**
@@ -290,51 +154,9 @@ router.get('/', asyncHandler(async (req, res) => {
  */
 router.get('/login', asyncHandler(async (req, res) => {
   if (req.session?.user) {
-<<<<<<< HEAD
-    return res.redirect(req.session.user.type === 'staff' ? '/admin' : '/');
-  }
-
-  const error = req.query.error;
-  let errorHtml = '';
-  if (error === 'invalid') {
-    errorHtml = '<div class="alert alert-danger">Invalid username or password.</div>';
-  } else if (error === 'server') {
-    errorHtml = '<div class="alert alert-danger">A server error occurred. Please try again.</div>';
-  }
-
-  const content = `
-    <div class="auth-form">
-      <h2>Sign In</h2>
-      ${errorHtml}
-      <form action="/login" method="POST" id="loginForm">
-        <div class="tab-toggle">
-          <input type="radio" name="type" value="user" id="type-user" checked>
-          <label for="type-user">User Portal</label>
-          <input type="radio" name="type" value="staff" id="type-staff">
-          <label for="type-staff">Staff Portal</label>
-        </div>
-        <div class="form-group">
-          <label for="username">Username or Email</label>
-          <input type="text" id="username" name="username" required autocomplete="username">
-        </div>
-        <div class="form-group">
-          <label for="password">Password</label>
-          <input type="password" id="password" name="password" required autocomplete="current-password">
-        </div>
-        <button type="submit" class="btn btn-primary" style="width:100%">Sign In</button>
-      </form>
-      <p style="text-align:center; margin-top:16px; font-size:0.875rem">
-        <a href="/forgot-password">Forgot your password?</a>
-      </p>
-    </div>
-  `;
-
-  res.send(renderPage('Login', content, base));
-=======
     return res.redirect('/#?yg-app=tickets');
   }
   res.redirect('/#?yg-app=login');
->>>>>>> 19b3b805ece5dc4fb273d3a79aabecd048db9e81
 }));
 
 /**
@@ -381,7 +203,7 @@ router.post('/login', express.urlencoded({ extended: true }), asyncHandler(async
         FROM ${db.table('user_account')} ua
         JOIN ${db.table('user')} u ON ua.user_id = u.id
         LEFT JOIN ${db.table('user_email')} ue ON u.default_email_id = ue.id
-        WHERE ua.username = ? AND ua.status = 1
+        WHERE ua.username = ?
       `, [username]);
 
       if (!account) {
@@ -399,7 +221,8 @@ router.post('/login', express.urlencoded({ extended: true }), asyncHandler(async
         name: account.name,
         email: account.email,
         isAdmin: false,
-        type: 'user'
+        type: 'user',
+        verified: account.status === 1
       };
 
       return res.redirect('/#?yg-app=tickets');
@@ -409,6 +232,16 @@ router.post('/login', express.urlencoded({ extended: true }), asyncHandler(async
     return res.redirect('/login?error=server');
   }
 }));
+
+/**
+ * Register page - Redirect to SPA
+ */
+router.get('/register', (req, res) => {
+  if (req.session?.user) {
+    return res.redirect('/#?yg-app=tickets');
+  }
+  res.redirect('/#?yg-app=register');
+});
 
 /**
  * Forgot password page
@@ -424,6 +257,7 @@ router.get('/forgot-password', asyncHandler(async (req, res) => {
       </p>
       <div id="resetMessage"></div>
       <form action="/forgot-password" method="POST" id="forgotForm">
+        <input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">
         <div class="form-group">
           <label for="email">Email Address</label>
           <input type="email" id="email" name="email" required autocomplete="email">
@@ -491,11 +325,8 @@ router.post('/forgot-password', express.urlencoded({ extended: true }), asyncHan
       const helpdeskUrl = config.helpdesk.url.replace(/\/$/, '');
       resetUrl = `${helpdeskUrl}/reset-password?token=${resetToken}`;
 
-      console.log(`\n=== PASSWORD RESET ===`);
-      console.log(`Account: ${email} (${resetType})`);
-      console.log(`Reset URL: ${resetUrl}`);
-      console.log(`Expires: 1 hour`);
-      console.log(`======================\n`);
+      const { sendEmail } = require('../lib/email');
+      await sendEmail(email, 'Password Reset', `<p>Click the link below to reset your password:</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>This link expires in 1 hour.</p>`);
     }
   }
 
@@ -567,14 +398,15 @@ router.get('/reset-password', asyncHandler(async (req, res) => {
       <h2>Set New Password</h2>
       <div id="resetError"></div>
       <form action="/reset-password" method="POST" id="resetForm">
+        <input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">
         <input type="hidden" name="token" value="${escapeHtml(token)}">
         <div class="form-group">
           <label for="password">New Password</label>
-          <input type="password" id="password" name="password" required minlength="6" autocomplete="new-password">
+          <input type="password" id="password" name="password" required minlength="8" autocomplete="new-password">
         </div>
         <div class="form-group">
           <label for="confirm">Confirm Password</label>
-          <input type="password" id="confirm" name="confirm" required minlength="6" autocomplete="new-password">
+          <input type="password" id="confirm" name="confirm" required minlength="8" autocomplete="new-password">
         </div>
         <button type="submit" class="btn btn-primary" style="width:100%">Reset Password</button>
       </form>
@@ -613,11 +445,11 @@ router.post('/reset-password', express.urlencoded({ extended: true }), asyncHand
     return res.send(renderPage('Reset Password', content, base));
   }
 
-  if (password.length < 6) {
+  if (password.length < 8) {
     const content = `
       <div class="auth-form">
         <h2>Reset Password</h2>
-        <div class="alert alert-danger">Password must be at least 6 characters.</div>
+        <div class="alert alert-danger">Password must be at least 8 characters.</div>
         <p style="text-align:center; margin-top:16px"><a href="/reset-password?token=${escapeHtml(token)}">Try Again</a></p>
       </div>
     `;

@@ -26,4 +26,13 @@ router.post('/forgot-password', asyncHandler(authController.forgotPassword));
 // POST /api/v1/auth/reset-password - Reset password with token
 router.post('/reset-password', asyncHandler(authController.resetPassword));
 
+// POST /api/v1/auth/register - Register new user
+router.post('/register', asyncHandler(authController.register));
+
+// GET /api/v1/auth/verify-email - Verify email with token
+router.get('/verify-email', asyncHandler(authController.verifyEmail));
+
+// POST /api/v1/auth/resend-verification - Resend verification email
+router.post('/resend-verification', authenticate, asyncHandler(authController.resendVerification));
+
 module.exports = router;

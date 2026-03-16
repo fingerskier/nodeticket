@@ -5,7 +5,7 @@
 const express = require('express');
 const router = express.Router();
 const ticketController = require('../controllers/ticketController');
-const { authenticate, canAccessTicket } = require('../middleware/auth');
+const { authenticate, canAccessTicket, requireVerified } = require('../middleware/auth');
 const { asyncHandler } = require('../middleware/errorHandler');
 
 // GET /api/v1/tickets - List tickets
@@ -21,7 +21,7 @@ router.get('/:id/thread', authenticate, canAccessTicket, asyncHandler(ticketCont
 router.get('/:id/events', authenticate, canAccessTicket, asyncHandler(ticketController.getEvents));
 
 // POST /api/v1/tickets - Create ticket
-router.post('/', authenticate, asyncHandler(ticketController.create));
+router.post('/', authenticate, requireVerified, asyncHandler(ticketController.create));
 
 // PUT /api/v1/tickets/:id - Update ticket
 router.put('/:id', authenticate, canAccessTicket, asyncHandler(ticketController.update));

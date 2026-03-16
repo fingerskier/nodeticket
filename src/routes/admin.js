@@ -2,6 +2,7 @@
  * Admin Routes - Staff Interface
  */
 
+const crypto = require('crypto');
 const express = require('express');
 const router = express.Router();
 const db = require('../lib/db');
@@ -71,6 +72,7 @@ const renderAdminPage = (title, content, base, activeNav = '') => `
       <a href="/admin/topics" class="${activeNav === 'topics' ? 'active' : ''}">Help Topics</a>
       <a href="/admin/sla" class="${activeNav === 'sla' ? 'active' : ''}">SLA Plans</a>
       <a href="/admin/faq" class="${activeNav === 'faq' ? 'active' : ''}">FAQ</a>
+      ${base.isAdmin ? `<a href="/admin/api-keys" class="${activeNav === 'api-keys' ? 'active' : ''}">API Keys</a>` : ''}
     </nav>
     <div class="sidebar-footer">
       <span class="user-name">${base.user?.name || 'Staff'}</span>
@@ -964,24 +966,6 @@ router.get('/faq', asyncHandler(async (req, res) => {
   res.send(renderAdminPage('FAQ Articles', faqHtml, base, 'faq'));
 }));
 
-/**
- * Helper functions
- */
-function escapeHtml(str) {
-  if (!str) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function formatDate(date) {
-  if (!date) return 'N/A';
-  return new Date(date).toLocaleString();
-}
-
 function getEntryPoster(entry) {
   if (entry.staff_id && entry.firstname) {
     return escapeHtml(`${entry.firstname} ${entry.lastname}`.trim());
@@ -1000,5 +984,264 @@ function getEntryType(type) {
     default: return type;
   }
 }
+
+/**
+ * API Key Management — admin only
+ */
+const requireAdmin = (req, res, next) => {
+  if (!req.session?.user?.isAdmin) {
+    return res.status(403).send(renderAdminPage('Forbidden', '<p class="error">Admin access required.</p>', { title: 'Admin', user: req.session?.user || null, isAdmin: false }, ''));
+  }
+  next();
+};
+
+// GET /admin/api-keys — list all keys
+router.get('/api-keys', requireAdmin, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  let keysHtml = '<p>No API keys found.</p>';
+
+  try {
+    const keys = await db.query(`SELECT * FROM ${db.table('api_key')} ORDER BY created DESC`);
+
+    if (keys.length > 0) {
+      keysHtml = `
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Key (masked)</th>
+              <th>IP Address</th>
+              <th>Create Tickets</th>
+              <th>Exec Cron</th>
+              <th>Active</th>
+              <th>Notes</th>
+              <th>Created</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${keys.map(k => `
+              <tr>
+                <td>${k.id}</td>
+                <td><code>...${escapeHtml(k.apikey.slice(-8))}</code></td>
+                <td>${escapeHtml(k.ipaddr || '0.0.0.0')}</td>
+                <td>${k.can_create_tickets ? '<span class="badge badge-success">Yes</span>' : '<span class="badge badge-danger">No</span>'}</td>
+                <td>${k.can_exec_cron ? '<span class="badge badge-success">Yes</span>' : '<span class="badge badge-danger">No</span>'}</td>
+                <td>${k.isactive ? '<span class="badge badge-success">Active</span>' : '<span class="badge badge-danger">Inactive</span>'}</td>
+                <td>${escapeHtml(k.notes || '-')}</td>
+                <td>${formatDate(k.created)}</td>
+                <td>
+                  <a href="/admin/api-keys/${k.id}" class="btn btn-sm">Edit</a>
+                  <form method="POST" action="/admin/api-keys/${k.id}/delete" style="display:inline" onsubmit="return confirm('Delete this API key?')">
+                    <input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">
+                    <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                  </form>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+  } catch (e) {
+    console.error('Error loading API keys:', e);
+    keysHtml = '<p class="error">Error loading API keys.</p>';
+  }
+
+  const content = `
+    <div class="page-actions" style="margin-bottom:16px">
+      <a href="/admin/api-keys/create" class="btn">+ New API Key</a>
+    </div>
+    ${keysHtml}
+  `;
+
+  res.send(renderAdminPage('API Keys', content, base, 'api-keys'));
+}));
+
+// GET /admin/api-keys/create — create form
+router.get('/api-keys/create', requireAdmin, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+
+  const content = `
+    <form method="POST" action="/admin/api-keys" class="admin-form">
+      <input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">
+      <div class="form-group">
+        <label>IP Address <small>(0.0.0.0 = any)</small></label>
+        <input type="text" name="ipaddr" value="0.0.0.0" class="form-control">
+      </div>
+      <div class="form-group">
+        <label>
+          <input type="checkbox" name="can_create_tickets" value="1">
+          Can Create Tickets
+        </label>
+      </div>
+      <div class="form-group">
+        <label>
+          <input type="checkbox" name="can_exec_cron" value="1">
+          Can Execute Cron
+        </label>
+      </div>
+      <div class="form-group">
+        <label>
+          <input type="checkbox" name="isactive" value="1" checked>
+          Active
+        </label>
+      </div>
+      <div class="form-group">
+        <label>Notes</label>
+        <textarea name="notes" class="form-control" rows="3"></textarea>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn">Create Key</button>
+        <a href="/admin/api-keys" class="btn btn-secondary">Cancel</a>
+      </div>
+    </form>
+  `;
+
+  res.send(renderAdminPage('Create API Key', content, base, 'api-keys'));
+}));
+
+// POST /admin/api-keys — create key
+router.post('/api-keys', requireAdmin, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const { ipaddr = '0.0.0.0', can_create_tickets, can_exec_cron, isactive, notes } = req.body;
+
+  const newKey = crypto.randomBytes(32).toString('hex');
+  const now = new Date();
+
+  try {
+    await db.query(`
+      INSERT INTO ${db.table('api_key')} (isactive, ipaddr, apikey, can_create_tickets, can_exec_cron, notes, created, updated)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      isactive ? 1 : 0,
+      ipaddr || '0.0.0.0',
+      newKey,
+      can_create_tickets ? 1 : 0,
+      can_exec_cron ? 1 : 0,
+      notes || '',
+      now,
+      now
+    ]);
+
+    const content = `
+      <div class="alert alert-success">
+        <strong>API Key Created</strong>
+        <p>Copy this key now — it will not be shown again in full:</p>
+        <pre style="background:#f4f4f4;padding:12px;border-radius:4px;word-break:break-all">${escapeHtml(newKey)}</pre>
+      </div>
+      <p><a href="/admin/api-keys" class="btn">Back to API Keys</a></p>
+    `;
+
+    res.send(renderAdminPage('API Key Created', content, base, 'api-keys'));
+  } catch (e) {
+    console.error('Error creating API key:', e);
+    const content = `<p class="error">Error creating API key: ${escapeHtml(e.message)}</p><p><a href="/admin/api-keys/create" class="btn">Try Again</a></p>`;
+    res.status(500).send(renderAdminPage('Error', content, base, 'api-keys'));
+  }
+}));
+
+// GET /admin/api-keys/:id — edit form
+router.get('/api-keys/:id', requireAdmin, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const { id } = req.params;
+
+  try {
+    const key = await db.queryOne(`SELECT * FROM ${db.table('api_key')} WHERE id = ?`, [id]);
+
+    if (!key) {
+      return res.status(404).send(renderAdminPage('Not Found', '<p>API key not found.</p>', base, 'api-keys'));
+    }
+
+    const content = `
+      <form method="POST" action="/admin/api-keys/${key.id}" class="admin-form">
+        <input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">
+        <div class="form-group">
+          <label>Key (masked)</label>
+          <input type="text" value="...${escapeHtml(key.apikey.slice(-8))}" class="form-control" disabled>
+        </div>
+        <div class="form-group">
+          <label>IP Address <small>(0.0.0.0 = any)</small></label>
+          <input type="text" name="ipaddr" value="${escapeHtml(key.ipaddr || '0.0.0.0')}" class="form-control">
+        </div>
+        <div class="form-group">
+          <label>
+            <input type="checkbox" name="can_create_tickets" value="1" ${key.can_create_tickets ? 'checked' : ''}>
+            Can Create Tickets
+          </label>
+        </div>
+        <div class="form-group">
+          <label>
+            <input type="checkbox" name="can_exec_cron" value="1" ${key.can_exec_cron ? 'checked' : ''}>
+            Can Execute Cron
+          </label>
+        </div>
+        <div class="form-group">
+          <label>
+            <input type="checkbox" name="isactive" value="1" ${key.isactive ? 'checked' : ''}>
+            Active
+          </label>
+        </div>
+        <div class="form-group">
+          <label>Notes</label>
+          <textarea name="notes" class="form-control" rows="3">${escapeHtml(key.notes || '')}</textarea>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn">Save Changes</button>
+          <a href="/admin/api-keys" class="btn btn-secondary">Cancel</a>
+        </div>
+      </form>
+    `;
+
+    res.send(renderAdminPage(`Edit API Key #${key.id}`, content, base, 'api-keys'));
+  } catch (e) {
+    console.error('Error loading API key:', e);
+    res.status(500).send(renderAdminPage('Error', '<p class="error">Error loading API key.</p>', base, 'api-keys'));
+  }
+}));
+
+// POST /admin/api-keys/:id — update key
+router.post('/api-keys/:id', requireAdmin, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { ipaddr, can_create_tickets, can_exec_cron, isactive, notes } = req.body;
+
+  try {
+    await db.query(`
+      UPDATE ${db.table('api_key')}
+      SET isactive = ?, ipaddr = ?, can_create_tickets = ?, can_exec_cron = ?, notes = ?, updated = ?
+      WHERE id = ?
+    `, [
+      isactive ? 1 : 0,
+      ipaddr || '0.0.0.0',
+      can_create_tickets ? 1 : 0,
+      can_exec_cron ? 1 : 0,
+      notes || '',
+      new Date(),
+      id
+    ]);
+
+    res.redirect('/admin/api-keys');
+  } catch (e) {
+    console.error('Error updating API key:', e);
+    const base = await getAdminData(req);
+    const content = `<p class="error">Error updating API key: ${escapeHtml(e.message)}</p><p><a href="/admin/api-keys/${id}" class="btn">Back</a></p>`;
+    res.status(500).send(renderAdminPage('Error', content, base, 'api-keys'));
+  }
+}));
+
+// POST /admin/api-keys/:id/delete — delete key
+router.post('/api-keys/:id/delete', requireAdmin, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    await db.query(`DELETE FROM ${db.table('api_key')} WHERE id = ?`, [id]);
+    res.redirect('/admin/api-keys');
+  } catch (e) {
+    console.error('Error deleting API key:', e);
+    const base = await getAdminData(req);
+    const content = `<p class="error">Error deleting API key: ${escapeHtml(e.message)}</p><p><a href="/admin/api-keys" class="btn">Back</a></p>`;
+    res.status(500).send(renderAdminPage('Error', content, base, 'api-keys'));
+  }
+}));
 
 module.exports = router;

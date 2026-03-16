@@ -81,6 +81,13 @@ const authenticate = async (req, res, next) => {
 
   // Try session (for HTML interface)
   if (!auth && req.session?.user) {
+    const now = Date.now();
+    const lastActivity = req.session.lastActivity || now;
+    if (now - lastActivity > config.session.idleTimeout) {
+      req.session.destroy(() => {});
+      return res.status(401).json({ success: false, message: 'Session expired', code: 'IDLE_TIMEOUT' });
+    }
+    req.session.lastActivity = now;
     auth = req.session.user;
   }
 
@@ -106,6 +113,14 @@ const optionalAuth = async (req, res, next) => {
   }
 
   if (!auth && req.session?.user) {
+    const now = Date.now();
+    const lastActivity = req.session.lastActivity || now;
+    if (now - lastActivity > config.session.idleTimeout) {
+      req.session.destroy(() => {});
+      req.auth = null;
+      return next();
+    }
+    req.session.lastActivity = now;
     auth = req.session.user;
   }
 
@@ -225,6 +240,22 @@ const canAccessTicket = async (req, res, next) => {
   next();
 };
 
+/**
+ * Require email verification for user accounts
+ */
+const requireVerified = async (req, res, next) => {
+  if (req.auth?.type === 'user') {
+    const account = await db.queryOne(
+      `SELECT status FROM ${db.table('user_account')} WHERE user_id = ?`,
+      [req.auth.id]
+    );
+    if (!account || account.status !== 1) {
+      return res.status(403).json({ success: false, message: 'Email verification required', code: 'UNVERIFIED' });
+    }
+  }
+  next();
+};
+
 module.exports = {
   authenticate,
   optionalAuth,
@@ -232,6 +263,7 @@ module.exports = {
   requireAdmin,
   requirePermission,
   canAccessTicket,
+  requireVerified,
   verifyToken,
   verifyApiKey
 };

@@ -134,11 +134,103 @@ const views = {
         </form>
         <p class="form-footer">
           <button class="link-btn" data-state="home">&larr; Back to Home</button>
+          <a href="#" class="link-btn" data-state="register">Create Account</a>
         </p>
       </div>
     `;
 
     document.getElementById('loginForm').addEventListener('submit', handleLogin);
+    bindStateButtons();
+    content.classList.remove('fade-out');
+    content.classList.add('fade-in');
+    await delay(150);
+    content.classList.remove('fade-in');
+  },
+
+  async register() {
+    if (currentUser) {
+      app.gotoState('tickets');
+      return;
+    }
+
+    const content = document.getElementById('content');
+    content.classList.add('fade-out');
+    await delay(150);
+
+    content.innerHTML = `
+      <div class="auth-form slide-in">
+        <h2>Create Account</h2>
+        <form id="registerForm">
+          <div class="form-group">
+            <label for="reg-name">Full Name</label>
+            <input type="text" id="reg-name" name="name" required autocomplete="name">
+          </div>
+          <div class="form-group">
+            <label for="reg-email">Email Address</label>
+            <input type="email" id="reg-email" name="email" required autocomplete="email">
+          </div>
+          <div class="form-group">
+            <label for="reg-username">Username</label>
+            <input type="text" id="reg-username" name="username" required minlength="3" autocomplete="username">
+          </div>
+          <div class="form-group">
+            <label for="reg-password">Password</label>
+            <input type="password" id="reg-password" name="password" required minlength="8" autocomplete="new-password">
+          </div>
+          <div class="form-group">
+            <label for="reg-confirm">Confirm Password</label>
+            <input type="password" id="reg-confirm" name="confirm" required minlength="8" autocomplete="new-password">
+          </div>
+          <div class="form-error" id="registerError"></div>
+          <button type="submit" class="btn btn-primary btn-block">Create Account</button>
+        </form>
+        <p class="form-footer">
+          <button class="link-btn" data-state="login">&larr; Back to Login</button>
+        </p>
+      </div>
+    `;
+
+    document.getElementById('registerForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = e.target;
+      const errorDiv = document.getElementById('registerError');
+      const submitBtn = form.querySelector('button[type="submit"]');
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Creating account...';
+      errorDiv.textContent = '';
+
+      const formData = new FormData(form);
+      const data = Object.fromEntries(formData);
+
+      try {
+        const res = await api.post('/auth/register', data);
+
+        if (res.success) {
+          const content = document.getElementById('content');
+          content.innerHTML = `
+            <div class="auth-form slide-in">
+              <h2>Check Your Email</h2>
+              <p>Registration successful! Please check your email to verify your account before logging in.</p>
+              <p class="form-footer">
+                <button class="link-btn" data-state="login">&larr; Back to Login</button>
+              </p>
+            </div>
+          `;
+          bindStateButtons();
+        } else {
+          errorDiv.textContent = res.message || 'Registration failed. Please try again.';
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Create Account';
+        }
+      } catch (err) {
+        console.error('Registration error:', err);
+        errorDiv.textContent = 'Connection error. Please try again.';
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Create Account';
+      }
+    });
+
     bindStateButtons();
     content.classList.remove('fade-out');
     content.classList.add('fade-in');
@@ -491,6 +583,11 @@ async function handleLogin(e) {
   const formData = new FormData(form);
   const data = Object.fromEntries(formData);
 
+  // Add CSRF token
+  if (window.APP_CONFIG?.csrfToken) {
+    data._csrf = window.APP_CONFIG.csrfToken;
+  }
+
   try {
     const res = await fetch('/login', {
       method: 'POST',
@@ -633,6 +730,27 @@ function updateNav() {
       <button class="nav-link" id="logoutBtn">Logout</button>
     `;
     document.getElementById('logoutBtn').addEventListener('click', handleLogout);
+
+    // Show verification banner if unverified
+    const existingBanner = document.querySelector('.verification-banner');
+    if (existingBanner) existingBanner.remove();
+
+    if (currentUser && currentUser.verified === false) {
+      const banner = document.createElement('div');
+      banner.className = 'verification-banner';
+      banner.innerHTML = `
+        <div class="container">
+          <p>Your email is not verified. Please check your inbox.
+            <button class="btn btn-sm" id="resendVerification">Resend Verification Email</button>
+          </p>
+        </div>
+      `;
+      document.querySelector('.main').prepend(banner);
+      document.getElementById('resendVerification').addEventListener('click', async () => {
+        const res = await api.post('/auth/resend-verification', {});
+        alert(res.message || 'Verification email sent');
+      });
+    }
   } else {
     nav.innerHTML = `
       <button class="nav-link" data-state="home">Home</button>
@@ -646,6 +764,61 @@ function updateNav() {
 
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Idle timeout detection
+ */
+let idleTimer = null;
+let idleWarningTimer = null;
+const IDLE_TIMEOUT = window.APP_CONFIG?.idleTimeout || 30 * 60 * 1000;
+const IDLE_WARNING = 5 * 60 * 1000; // warn 5 min before
+
+function resetIdleTimers() {
+  if (!currentUser) return;
+
+  clearTimeout(idleTimer);
+  clearTimeout(idleWarningTimer);
+
+  // Remove existing warning
+  const existing = document.querySelector('.idle-warning');
+  if (existing) existing.remove();
+
+  // Set warning timer
+  idleWarningTimer = setTimeout(() => {
+    const warning = document.createElement('div');
+    warning.className = 'idle-warning';
+    warning.innerHTML = `
+      <div class="container">
+        <p>Your session will expire soon due to inactivity.
+          <button class="btn btn-sm" id="dismissIdleWarning">Stay Logged In</button>
+        </p>
+      </div>
+    `;
+    document.querySelector('.main').prepend(warning);
+    document.getElementById('dismissIdleWarning').addEventListener('click', async () => {
+      await api.get('/auth/me');
+      warning.remove();
+      resetIdleTimers();
+    });
+  }, IDLE_TIMEOUT - IDLE_WARNING);
+
+  // Set logout timer
+  idleTimer = setTimeout(() => {
+    currentUser = null;
+    updateNav();
+    app.gotoState('login');
+    const existing = document.querySelector('.idle-warning');
+    if (existing) existing.remove();
+  }, IDLE_TIMEOUT);
+}
+
+function initIdleDetection() {
+  if (!currentUser) return;
+  ['click', 'keypress', 'scroll', 'mousemove'].forEach(event => {
+    document.addEventListener(event, () => resetIdleTimers(), { passive: true });
+  });
+  resetIdleTimers();
 }
 
 /**
@@ -666,7 +839,11 @@ async function initApp() {
       },
       login: {
         onEnter: () => views.login(),
-        transition: ['home', 'tickets']
+        transition: ['home', 'tickets', 'register']
+      },
+      register: {
+        onEnter: () => views.register(),
+        transition: ['login', 'home']
       },
       tickets: {
         onEnter: () => views.tickets(),
@@ -699,6 +876,8 @@ async function initApp() {
   if (!window.location.hash || !window.location.hash.includes('yg-app')) {
     app.gotoState('home');
   }
+
+  initIdleDetection();
 }
 
 // Start the app when DOM is ready

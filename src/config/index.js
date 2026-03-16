@@ -31,7 +31,8 @@ const config = {
   session: {
     secret: process.env.SESSION_SECRET || 'nodeticket-secret-change-me',
     name: 'nodeticket.sid',
-    maxAge: parseInt(process.env.SESSION_MAX_AGE, 10) || 86400000 // 24 hours
+    maxAge: parseInt(process.env.SESSION_MAX_AGE, 10) || 86400000, // 24 hours
+    idleTimeout: parseInt(process.env.SESSION_IDLE_TIMEOUT, 10) || 1800000
   },
 
   // JWT configuration
@@ -53,6 +54,21 @@ const config = {
   helpdesk: {
     title: process.env.HELPDESK_TITLE || 'Nodeticket Help Desk',
     url: process.env.HELPDESK_URL || 'http://localhost:3000'
+  },
+
+  // Email configuration (AWS SES)
+  email: {
+    from: process.env.EMAIL_FROM || 'noreply@localhost',
+    region: process.env.AWS_REGION || 'us-east-1'
+  },
+
+  // MCP (Model Context Protocol) service
+  mcp: {
+    enabled: process.env.MCP_ENABLED === 'true',
+    jwt: {
+      secret: process.env.MCP_JWT_SECRET || 'mcp-jwt-secret-change-me',
+      expiresIn: process.env.MCP_JWT_EXPIRES_IN || '8h'
+    }
   }
 };
 
@@ -66,6 +82,9 @@ const validateConfig = () => {
     }
     if (config.jwt.secret === 'jwt-secret-change-me') {
       errors.push('JWT_SECRET must be set in production');
+    }
+    if (config.mcp.enabled && config.mcp.jwt.secret === 'mcp-jwt-secret-change-me') {
+      errors.push('MCP_JWT_SECRET must be set in production when MCP is enabled');
     }
   }
 

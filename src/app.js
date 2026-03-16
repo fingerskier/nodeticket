@@ -15,6 +15,7 @@ const path = require('path');
 const config = require('./config');
 const db = require('./lib/db');
 const { notFoundHandler, errorHandler } = require('./middleware/errorHandler');
+const { generateToken, csrfProtection } = require('./middleware/csrf');
 
 // Import routes
 const authRoutes = require('./routes/auth');
@@ -104,9 +105,21 @@ app.use('/api/v1', systemRoutes);
 // Legacy interoperability endpoints
 app.use('/api', ticketRoutes);
 
-// HTML routes
-app.use('/admin', adminRoutes);
-app.use('/', htmlRoutes);
+// CSRF token generator (available to all HTML routes including admin)
+app.use((req, res, next) => {
+  req.csrfToken = () => generateToken(req, res);
+  next();
+});
+
+// HTML routes (CSRF protection applied to both admin and public)
+app.use('/admin', csrfProtection, adminRoutes);
+app.use('/', csrfProtection, htmlRoutes);
+
+// MCP service
+if (config.mcp.enabled) {
+  app.use('/.well-known', require('./mcp/oauth/metadata'));
+  app.use('/mcp', require('./mcp'));
+}
 
 // Error handling
 app.use(notFoundHandler);
