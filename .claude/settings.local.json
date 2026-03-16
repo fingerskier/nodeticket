@@ -11,7 +11,26 @@
       "Bash(git -C c:/dev/fingerskier/utility/nodeticket show --stat 0d6c84e)",
       "Bash(git -C c:/dev/fingerskier/utility/nodeticket log --oneline --all -- docs/mysql.sql)",
       "Bash(git -C c:/dev/fingerskier/utility/nodeticket log --diff-filter=A --oneline -- docs/mysql.sql)",
-      "Bash(git -C c:/dev/fingerskier/utility/nodeticket status docs/mysql.sql)"
+      "Bash(git -C c:/dev/fingerskier/utility/nodeticket status docs/mysql.sql)",
+      "mcp__claude_ai_Reqall__upsert_project",
+      "mcp__claude_ai_Reqall__list_records",
+      "Bash(gh issue:*)",
+      "Bash(git:*)",
+      "Bash(gh pr:*)",
+      "mcp__claude_ai_Reqall__list_projects",
+      "mcp__claude_ai_Reqall__upsert_record",
+      "mcp__claude_ai_Reqall__upsert_link",
+      "mcp__claude_ai_Reqall__get_record",
+      "mcp__claude_ai_Reqall__search",
+      "Bash(find:*)",
+      "Bash(npm install:*)",
+      "Bash(ls:*)",
+      "Bash(for f:*)",
+      "Bash(grep:*)",
+      "Bash(git rev-list:*)",
+      "mcp__plugin_context7_context7__resolve-library-id",
+      "mcp__plugin_context7_context7__query-docs",
+      "Bash(npm ls:*)"
     ]
   }
 }

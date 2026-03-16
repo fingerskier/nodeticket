@@ -3,7 +3,7 @@ const config = require('../config');
 
 const { generateCsrfToken, doubleCsrfProtection } = doubleCsrf({
   getSecret: () => config.session.secret,
-  getSessionIdentifier: (req) => req.session?.id || '',
+  getSessionIdentifier: () => 'csrf-sid',
   cookieName: '__csrf',
   cookieOptions: {
     httpOnly: true,
