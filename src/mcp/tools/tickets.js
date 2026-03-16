@@ -9,6 +9,21 @@ const { z } = require('zod');
 const db = require('../../lib/db');
 
 /**
+ * Log a thread event (MCP helper)
+ */
+const logEvent = async (threadId, eventName, staffId, username, data) => {
+  const event = await db.queryOne(
+    `SELECT id FROM ${db.table('event')} WHERE name = ?`, [eventName]
+  );
+  if (!event) return;
+  await db.query(`
+    INSERT INTO ${db.table('thread_event')}
+    (thread_id, event_id, staff_id, username, data, timestamp)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `, [threadId, event.id, staffId || 0, username || '', JSON.stringify(data), new Date()]);
+};
+
+/**
  * Format ticket for MCP response
  */
 const formatTicket = (t) => ({
@@ -381,7 +396,10 @@ const registerTicketTools = (server, userAuth) => {
 
       try {
         const ticket = await db.queryOne(
-          `SELECT ticket_id FROM ${db.table('ticket')} WHERE ticket_id = ?`,
+          `SELECT t.ticket_id, t.status_id, th.id as thread_id
+           FROM ${db.table('ticket')} t
+           LEFT JOIN ${db.table('thread')} th ON th.object_id = t.ticket_id AND th.object_type = 'T'
+           WHERE t.ticket_id = ?`,
           [params.ticket_id]
         );
 
@@ -391,11 +409,40 @@ const registerTicketTools = (server, userAuth) => {
 
         const updates = [];
         const sqlParams = [];
+        const staffId = userAuth?.id || 0;
+        const username = userAuth?.name || '';
 
-        if (params.status_id !== undefined) { updates.push('status_id = ?'); sqlParams.push(params.status_id); }
-        if (params.staff_id !== undefined) { updates.push('staff_id = ?'); sqlParams.push(params.staff_id); }
-        if (params.dept_id !== undefined) { updates.push('dept_id = ?'); sqlParams.push(params.dept_id); }
-        if (params.team_id !== undefined) { updates.push('team_id = ?'); sqlParams.push(params.team_id); }
+        if (params.status_id !== undefined) {
+          updates.push('status_id = ?'); sqlParams.push(params.status_id);
+          // Check if closing or reopening
+          const newStatus = await db.queryOne(
+            `SELECT state FROM ${db.table('ticket_status')} WHERE id = ?`, [params.status_id]
+          );
+          if (newStatus?.state === 'closed') {
+            updates.push('closed = ?'); sqlParams.push(new Date());
+            if (ticket.thread_id) await logEvent(ticket.thread_id, 'closed', staffId, username, { status_id: params.status_id });
+          } else {
+            const oldStatus = await db.queryOne(
+              `SELECT state FROM ${db.table('ticket_status')} WHERE id = ?`, [ticket.status_id]
+            );
+            if (oldStatus?.state === 'closed') {
+              updates.push('closed = ?'); sqlParams.push(null);
+              if (ticket.thread_id) await logEvent(ticket.thread_id, 'reopened', staffId, username, { status_id: params.status_id });
+            }
+          }
+        }
+        if (params.staff_id !== undefined) {
+          updates.push('staff_id = ?'); sqlParams.push(params.staff_id);
+          if (ticket.thread_id) await logEvent(ticket.thread_id, 'assigned', staffId, username, { staff_id: params.staff_id });
+        }
+        if (params.dept_id !== undefined) {
+          updates.push('dept_id = ?'); sqlParams.push(params.dept_id);
+          if (ticket.thread_id) await logEvent(ticket.thread_id, 'transferred', staffId, username, { dept_id: params.dept_id });
+        }
+        if (params.team_id !== undefined) {
+          updates.push('team_id = ?'); sqlParams.push(params.team_id);
+          if (ticket.thread_id) await logEvent(ticket.thread_id, 'assigned', staffId, username, { team_id: params.team_id });
+        }
 
         if (updates.length === 0) {
           return { content: [{ type: 'text', text: 'No updates provided' }], isError: true };
@@ -415,6 +462,221 @@ const registerTicketTools = (server, userAuth) => {
         };
       } catch (err) {
         return { content: [{ type: 'text', text: `Error updating ticket: ${err.message}` }], isError: true };
+      }
+    }
+  );
+
+  // ── reply_to_ticket ──
+  server.tool(
+    'reply_to_ticket',
+    'Post a reply to a ticket thread.',
+    {
+      ticket_id: z.number().describe('Ticket ID'),
+      message: z.string().describe('Reply message body'),
+      format: z.string().optional().default('text').describe('Message format (text or html)')
+    },
+    async (params) => {
+      try {
+        const thread = await db.queryOne(`
+          SELECT th.id FROM ${db.table('thread')} th
+          JOIN ${db.table('ticket')} t ON th.object_id = t.ticket_id AND th.object_type = 'T'
+          WHERE t.ticket_id = ?
+        `, [params.ticket_id]);
+
+        if (!thread) {
+          return { content: [{ type: 'text', text: 'Ticket not found' }], isError: true };
+        }
+
+        // Access control for users
+        if (userAuth?.type === 'user') {
+          const ticket = await db.queryOne(
+            `SELECT user_id FROM ${db.table('ticket')} WHERE ticket_id = ?`, [params.ticket_id]
+          );
+          if (ticket?.user_id !== userAuth.id) {
+            return { content: [{ type: 'text', text: 'Access denied' }], isError: true };
+          }
+        }
+
+        const isStaff = userAuth?.type === 'staff' || userAuth?.type === 'apikey';
+        const now = new Date();
+        const entryType = isStaff ? 'R' : 'M';
+        const poster = userAuth?.name || (isStaff ? 'Staff' : 'User');
+        const staffId = isStaff ? (userAuth?.id || 0) : 0;
+        const userId = !isStaff ? (userAuth?.id || 0) : 0;
+
+        const result = await db.query(`
+          INSERT INTO ${db.table('thread_entry')}
+          (thread_id, staff_id, user_id, type, poster, source, body, format, created)
+          VALUES (?, ?, ?, ?, ?, 'MCP', ?, ?, ?)
+        `, [thread.id, staffId, userId, entryType, poster, params.message.trim(), params.format || 'text', now]);
+
+        if (isStaff) {
+          await db.query(`UPDATE ${db.table('thread')} SET lastresponse = ? WHERE id = ?`, [now, thread.id]);
+          await db.query(`UPDATE ${db.table('ticket')} SET isanswered = 1, updated = ? WHERE ticket_id = ?`, [now, params.ticket_id]);
+        } else {
+          await db.query(`UPDATE ${db.table('thread')} SET lastmessage = ? WHERE id = ?`, [now, thread.id]);
+          await db.query(`UPDATE ${db.table('ticket')} SET updated = ? WHERE ticket_id = ?`, [now, params.ticket_id]);
+        }
+
+        await logEvent(thread.id, 'message', staffId, poster, { type: entryType });
+
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            entry_id: result.insertId, thread_id: thread.id, type: entryType, poster, created: now
+          }, null, 2) }]
+        };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error replying to ticket: ${err.message}` }], isError: true };
+      }
+    }
+  );
+
+  // ── add_note ──
+  server.tool(
+    'add_note',
+    'Add an internal note to a ticket. Requires staff authentication.',
+    {
+      ticket_id: z.number().describe('Ticket ID'),
+      note: z.string().describe('Note content'),
+      title: z.string().optional().describe('Optional note title')
+    },
+    async (params) => {
+      if (userAuth?.type !== 'staff' && userAuth?.type !== 'apikey') {
+        return { content: [{ type: 'text', text: 'Staff access required' }], isError: true };
+      }
+
+      try {
+        const thread = await db.queryOne(`
+          SELECT th.id FROM ${db.table('thread')} th
+          JOIN ${db.table('ticket')} t ON th.object_id = t.ticket_id AND th.object_type = 'T'
+          WHERE t.ticket_id = ?
+        `, [params.ticket_id]);
+
+        if (!thread) {
+          return { content: [{ type: 'text', text: 'Ticket not found' }], isError: true };
+        }
+
+        const now = new Date();
+        const staffId = userAuth?.id || 0;
+        const poster = userAuth?.name || 'Staff';
+
+        const result = await db.query(`
+          INSERT INTO ${db.table('thread_entry')}
+          (thread_id, staff_id, type, poster, title, source, body, format, created)
+          VALUES (?, ?, 'N', ?, ?, 'MCP', ?, 'text', ?)
+        `, [thread.id, staffId, poster, params.title || null, params.note.trim(), now]);
+
+        await db.query(`UPDATE ${db.table('ticket')} SET updated = ? WHERE ticket_id = ?`, [now, params.ticket_id]);
+        await logEvent(thread.id, 'note', staffId, poster, { title: params.title || null });
+
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            entry_id: result.insertId, thread_id: thread.id, type: 'N', poster, created: now
+          }, null, 2) }]
+        };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error adding note: ${err.message}` }], isError: true };
+      }
+    }
+  );
+
+  // ── merge_tickets ──
+  server.tool(
+    'merge_tickets',
+    'Merge a source ticket into a target ticket. Moves all thread entries and closes the source. Requires staff authentication.',
+    {
+      source_ticket_id: z.number().describe('Ticket ID to merge from (will be closed)'),
+      target_ticket_id: z.number().describe('Ticket ID to merge into (receives entries)')
+    },
+    async (params) => {
+      if (userAuth?.type !== 'staff' && userAuth?.type !== 'apikey') {
+        return { content: [{ type: 'text', text: 'Staff access required' }], isError: true };
+      }
+
+      if (params.source_ticket_id === params.target_ticket_id) {
+        return { content: [{ type: 'text', text: 'Cannot merge a ticket into itself' }], isError: true };
+      }
+
+      try {
+        const source = await db.queryOne(`
+          SELECT t.ticket_id, t.number, th.id as thread_id FROM ${db.table('ticket')} t
+          LEFT JOIN ${db.table('thread')} th ON th.object_id = t.ticket_id AND th.object_type = 'T'
+          WHERE t.ticket_id = ?
+        `, [params.source_ticket_id]);
+
+        const target = await db.queryOne(`
+          SELECT t.ticket_id, t.number, th.id as thread_id FROM ${db.table('ticket')} t
+          LEFT JOIN ${db.table('thread')} th ON th.object_id = t.ticket_id AND th.object_type = 'T'
+          WHERE t.ticket_id = ?
+        `, [params.target_ticket_id]);
+
+        if (!source) return { content: [{ type: 'text', text: 'Source ticket not found' }], isError: true };
+        if (!target) return { content: [{ type: 'text', text: 'Target ticket not found' }], isError: true };
+
+        const now = new Date();
+        const staffId = userAuth?.id || 0;
+        const username = userAuth?.name || 'Staff';
+
+        // All merge writes in a single transaction
+        await db.transaction(async (txQuery, txQueryOne) => {
+          // Helper to log events within the transaction
+          const txLogEvent = async (threadId, eventName, data) => {
+            const ev = await txQueryOne(
+              `SELECT id FROM ${db.table('event')} WHERE name = ?`, [eventName]
+            );
+            if (!ev) return;
+            await txQuery(`
+              INSERT INTO ${db.table('thread_event')}
+              (thread_id, event_id, staff_id, username, data, timestamp)
+              VALUES (?, ?, ?, ?, ?, ?)
+            `, [threadId, ev.id, staffId, username, JSON.stringify(data), now]);
+          };
+
+          // Move thread entries and collaborators
+          if (source.thread_id && target.thread_id) {
+            await txQuery(
+              `UPDATE ${db.table('thread_entry')} SET thread_id = ? WHERE thread_id = ?`,
+              [target.thread_id, source.thread_id]
+            );
+            await txQuery(
+              `UPDATE ${db.table('thread_collaborator')} SET thread_id = ? WHERE thread_id = ?`,
+              [target.thread_id, source.thread_id]
+            );
+          }
+
+          // Close source ticket
+          const closedStatus = await txQueryOne(
+            `SELECT id FROM ${db.table('ticket_status')} WHERE state = 'closed' ORDER BY sort ASC LIMIT 1`
+          );
+          if (closedStatus) {
+            await txQuery(
+              `UPDATE ${db.table('ticket')} SET status_id = ?, closed = ?, updated = ? WHERE ticket_id = ?`,
+              [closedStatus.id, now, now, params.source_ticket_id]
+            );
+          }
+
+          // Log events
+          if (target.thread_id) {
+            await txLogEvent(target.thread_id, 'merged', {
+              merged_from: source.number, source_ticket_id: params.source_ticket_id
+            });
+          }
+          if (source.thread_id) {
+            await txLogEvent(source.thread_id, 'merged', {
+              merged_into: target.number, target_ticket_id: params.target_ticket_id
+            });
+          }
+        });
+
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            merged: true,
+            source: { ticket_id: params.source_ticket_id, number: source.number, status: 'closed' },
+            target: { ticket_id: params.target_ticket_id, number: target.number }
+          }, null, 2) }]
+        };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error merging tickets: ${err.message}` }], isError: true };
       }
     }
   );

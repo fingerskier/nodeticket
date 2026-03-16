@@ -206,6 +206,63 @@ const count = async (tableName, where = {}) => {
 };
 
 /**
+ * Execute a function within a database transaction.
+ * The callback receives a query function bound to the transaction connection.
+ * If the callback throws, the transaction is rolled back automatically.
+ * @param {Function} fn - async (txQuery) => result
+ * @returns {Promise<*>} The return value of fn
+ */
+const transaction = async (fn) => {
+  if (!pool) await initialize();
+
+  const dialect = config.db.dialect;
+
+  if (dialect === 'postgres') {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const txQuery = async (sql, params = []) => {
+        const result = await client.query(sql, params);
+        return result.rows;
+      };
+      const txQueryOne = async (sql, params = []) => {
+        const rows = await txQuery(sql, params);
+        return rows[0] || null;
+      };
+      const result = await fn(txQuery, txQueryOne);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  } else {
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const txQuery = async (sql, params = []) => {
+        const [rows] = await connection.query(sql, params);
+        return rows;
+      };
+      const txQueryOne = async (sql, params = []) => {
+        const rows = await txQuery(sql, params);
+        return rows[0] || null;
+      };
+      const result = await fn(txQuery, txQueryOne);
+      await connection.commit();
+      return result;
+    } catch (err) {
+      await connection.rollback();
+      throw err;
+    } finally {
+      connection.release();
+    }
+  }
+};
+
+/**
  * Close the database connection pool
  */
 const close = async () => {
@@ -243,5 +300,6 @@ module.exports = {
   close,
   getDialect,
   getPrefix,
-  select
+  select,
+  transaction
 };

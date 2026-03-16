@@ -1,23 +1,23 @@
 # Todo
 
 ## P0 — Authentication & Security
-- [ ] User registration / self-service signup
+- [x] User registration / self-service signup
 - [x] Password reset flow
-- [ ] Email verification
-- [ ] Session timeout / idle logout
-- [ ] Two-factor authentication
-- [ ] API key management UI
-- [ ] CSRF protection on forms
+- [x] Email verification
+- [x] Session timeout / idle logout
+- [ ] Two-factor authentication (deferred)
+- [x] API key management UI
+- [x] CSRF protection on forms
 
 ## P1 — Ticket Management (Core Write Operations)
-- [ ] Create tickets (API + UI)
-- [ ] Update/edit tickets
-- [ ] Reply to tickets
-- [ ] Add internal notes
-- [ ] Assign/reassign tickets
-- [ ] Close/reopen tickets
-- [ ] Transfer between departments
-- [ ] Merge duplicate tickets
+- [x] Create tickets (API + UI)
+- [x] Update/edit tickets
+- [x] Reply to tickets
+- [x] Add internal notes
+- [x] Assign/reassign tickets
+- [x] Close/reopen tickets
+- [x] Transfer between departments
+- [x] Merge duplicate tickets
 
 ## P2 — User & Staff Management
 - [ ] Create/edit/delete users (admin)

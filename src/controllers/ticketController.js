@@ -400,24 +400,375 @@ const generateTicketNumber = () => {
 };
 
 /**
- * Update ticket (placeholder for write operations)
+ * Log a thread event
+ */
+const logEvent = async (threadId, eventName, staffId, username, data) => {
+  const event = await db.queryOne(
+    `SELECT id FROM ${db.table('event')} WHERE name = ?`, [eventName]
+  );
+  if (!event) return;
+
+  await db.query(`
+    INSERT INTO ${db.table('thread_event')}
+    (thread_id, event_id, staff_id, username, data, timestamp)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `, [threadId, event.id, staffId || 0, username || '', JSON.stringify(data), new Date()]);
+};
+
+/**
+ * Get thread ID for a ticket
+ */
+const getThreadId = async (ticketId) => {
+  const thread = await db.queryOne(`
+    SELECT th.id FROM ${db.table('thread')} th
+    JOIN ${db.table('ticket')} t ON th.object_id = t.ticket_id AND th.object_type = 'T'
+    WHERE t.ticket_id = ?
+  `, [ticketId]);
+  return thread?.id;
+};
+
+/**
+ * Update ticket
  */
 const update = async (req, res) => {
-  throw ApiError.badRequest('Write operations not yet implemented');
+  const { id } = req.params;
+  const { status_id, staff_id, dept_id, team_id, topic_id, sla_id, duedate, isoverdue } = req.body;
+
+  // Fetch current ticket
+  const ticket = await db.queryOne(
+    `SELECT t.*, th.id as thread_id FROM ${db.table('ticket')} t
+     LEFT JOIN ${db.table('thread')} th ON th.object_id = t.ticket_id AND th.object_type = 'T'
+     WHERE t.ticket_id = ?`, [id]
+  );
+  if (!ticket) throw ApiError.notFound('Ticket not found');
+
+  const isStaff = req.auth?.type === 'staff' || req.auth?.type === 'apikey';
+
+  // Users can only close their own tickets
+  if (!isStaff) {
+    if (status_id === undefined) {
+      throw ApiError.forbidden('Users can only update ticket status');
+    }
+    const newStatus = await db.queryOne(
+      `SELECT id, state FROM ${db.table('ticket_status')} WHERE id = ?`, [status_id]
+    );
+    if (!newStatus || newStatus.state !== 'closed') {
+      throw ApiError.forbidden('Users can only close their own tickets');
+    }
+  }
+
+  const updates = [];
+  const params = [];
+  const staffId = req.auth?.type === 'staff' ? req.auth.id : null;
+  const username = req.auth?.name || req.auth?.username || '';
+
+  // Validate and build updates
+  if (status_id !== undefined) {
+    const status = await db.queryOne(
+      `SELECT id, state FROM ${db.table('ticket_status')} WHERE id = ?`, [status_id]
+    );
+    if (!status) throw ApiError.badRequest('Invalid status_id');
+    updates.push('status_id = ?'); params.push(status_id);
+
+    if (status.state === 'closed') {
+      updates.push('closed = ?'); params.push(new Date());
+      if (ticket.thread_id) {
+        await logEvent(ticket.thread_id, 'closed', staffId, username, { status_id });
+      }
+    } else if (ticket.status_id !== status_id) {
+      // Check if reopening (was closed, now not)
+      const oldStatus = await db.queryOne(
+        `SELECT state FROM ${db.table('ticket_status')} WHERE id = ?`, [ticket.status_id]
+      );
+      if (oldStatus?.state === 'closed') {
+        updates.push('closed = ?'); params.push(null);
+        if (ticket.thread_id) {
+          await logEvent(ticket.thread_id, 'reopened', staffId, username, { status_id });
+        }
+      }
+    }
+  }
+
+  if (staff_id !== undefined && isStaff) {
+    if (staff_id !== null) {
+      const staff = await db.queryOne(
+        `SELECT staff_id FROM ${db.table('staff')} WHERE staff_id = ?`, [staff_id]
+      );
+      if (!staff) throw ApiError.badRequest('Invalid staff_id');
+    }
+    updates.push('staff_id = ?'); params.push(staff_id);
+    if (ticket.thread_id) {
+      await logEvent(ticket.thread_id, 'assigned', staffId, username, { staff_id });
+    }
+  }
+
+  if (dept_id !== undefined && isStaff) {
+    const dept = await db.queryOne(
+      `SELECT id FROM ${db.table('department')} WHERE id = ?`, [dept_id]
+    );
+    if (!dept) throw ApiError.badRequest('Invalid dept_id');
+    updates.push('dept_id = ?'); params.push(dept_id);
+    if (ticket.thread_id) {
+      await logEvent(ticket.thread_id, 'transferred', staffId, username, { dept_id });
+    }
+  }
+
+  if (team_id !== undefined && isStaff) {
+    if (team_id !== null) {
+      const team = await db.queryOne(
+        `SELECT team_id FROM ${db.table('team')} WHERE team_id = ?`, [team_id]
+      );
+      if (!team) throw ApiError.badRequest('Invalid team_id');
+    }
+    updates.push('team_id = ?'); params.push(team_id);
+    if (ticket.thread_id) {
+      await logEvent(ticket.thread_id, 'assigned', staffId, username, { team_id });
+    }
+  }
+
+  if (topic_id !== undefined && isStaff) {
+    const topic = await db.queryOne(
+      `SELECT topic_id FROM ${db.table('help_topic')} WHERE topic_id = ?`, [topic_id]
+    );
+    if (!topic) throw ApiError.badRequest('Invalid topic_id');
+    updates.push('topic_id = ?'); params.push(topic_id);
+  }
+
+  if (sla_id !== undefined && isStaff) {
+    if (sla_id !== null) {
+      const sla = await db.queryOne(
+        `SELECT id FROM ${db.table('sla')} WHERE id = ?`, [sla_id]
+      );
+      if (!sla) throw ApiError.badRequest('Invalid sla_id');
+    }
+    updates.push('sla_id = ?'); params.push(sla_id);
+  }
+
+  if (duedate !== undefined && isStaff) {
+    updates.push('duedate = ?'); params.push(duedate);
+  }
+
+  if (isoverdue !== undefined && isStaff) {
+    updates.push('isoverdue = ?'); params.push(isoverdue ? 1 : 0);
+  }
+
+  if (updates.length === 0) {
+    throw ApiError.badRequest('No valid updates provided');
+  }
+
+  updates.push('updated = ?'); params.push(new Date());
+  params.push(id);
+
+  await db.query(
+    `UPDATE ${db.table('ticket')} SET ${updates.join(', ')} WHERE ticket_id = ?`,
+    params
+  );
+
+  // Log general edit event
+  if (ticket.thread_id && !updates.some(u => u.startsWith('status_id') || u.startsWith('staff_id') || u.startsWith('dept_id') || u.startsWith('team_id'))) {
+    await logEvent(ticket.thread_id, 'edited', staffId, username, req.body);
+  }
+
+  res.json({ success: true, message: 'Ticket updated', data: { ticket_id: parseInt(id, 10) } });
 };
 
 /**
- * Reply to ticket (placeholder for write operations)
+ * Reply to ticket
  */
 const reply = async (req, res) => {
-  throw ApiError.badRequest('Write operations not yet implemented');
+  const { id } = req.params;
+  const { message, format } = req.body;
+
+  if (!message || !message.trim()) {
+    throw ApiError.badRequest('Message is required');
+  }
+
+  const threadId = await getThreadId(id);
+  if (!threadId) throw ApiError.notFound('Ticket not found');
+
+  const isStaff = req.auth?.type === 'staff' || req.auth?.type === 'apikey';
+  const now = new Date();
+
+  const entryType = isStaff ? 'R' : 'M';
+  const poster = req.auth?.name || req.auth?.username || (isStaff ? 'Staff' : 'User');
+  const staffId = isStaff ? (req.auth?.id || 0) : null;
+  const userId = !isStaff ? req.auth?.id : null;
+
+  const result = await db.query(`
+    INSERT INTO ${db.table('thread_entry')}
+    (thread_id, staff_id, user_id, type, poster, source, body, format, created)
+    VALUES (?, ?, ?, ?, ?, 'API', ?, ?, ?)
+  `, [threadId, staffId || 0, userId || 0, entryType, poster, message.trim(), format || 'text', now]);
+
+  // Update thread timestamps
+  if (isStaff) {
+    await db.query(
+      `UPDATE ${db.table('thread')} SET lastresponse = ? WHERE id = ?`, [now, threadId]
+    );
+    // Mark ticket as answered
+    await db.query(
+      `UPDATE ${db.table('ticket')} SET isanswered = 1, updated = ? WHERE ticket_id = ?`, [now, id]
+    );
+  } else {
+    await db.query(
+      `UPDATE ${db.table('thread')} SET lastmessage = ? WHERE id = ?`, [now, threadId]
+    );
+    await db.query(
+      `UPDATE ${db.table('ticket')} SET updated = ? WHERE ticket_id = ?`, [now, id]
+    );
+  }
+
+  await logEvent(threadId, 'message', staffId, poster, { type: entryType });
+
+  res.status(201).json({
+    success: true,
+    message: 'Reply added',
+    data: {
+      id: result.insertId,
+      thread_id: threadId,
+      type: entryType,
+      poster,
+      body: message.trim(),
+      created: now
+    }
+  });
 };
 
 /**
- * Add note to ticket (placeholder for write operations)
+ * Add internal note to ticket (staff only)
  */
 const addNote = async (req, res) => {
-  throw ApiError.badRequest('Write operations not yet implemented');
+  const { id } = req.params;
+  const { title, note } = req.body;
+
+  if (!note || !note.trim()) {
+    throw ApiError.badRequest('Note content is required');
+  }
+
+  const threadId = await getThreadId(id);
+  if (!threadId) throw ApiError.notFound('Ticket not found');
+
+  const now = new Date();
+  const staffId = req.auth?.id || 0;
+  const poster = req.auth?.name || req.auth?.username || 'Staff';
+
+  const result = await db.query(`
+    INSERT INTO ${db.table('thread_entry')}
+    (thread_id, staff_id, type, poster, title, source, body, format, created)
+    VALUES (?, ?, 'N', ?, ?, 'API', ?, 'text', ?)
+  `, [threadId, staffId, poster, title || null, note.trim(), now]);
+
+  await db.query(
+    `UPDATE ${db.table('ticket')} SET updated = ? WHERE ticket_id = ?`, [now, id]
+  );
+
+  await logEvent(threadId, 'note', staffId, poster, { title: title || null });
+
+  res.status(201).json({
+    success: true,
+    message: 'Note added',
+    data: {
+      id: result.insertId,
+      thread_id: threadId,
+      type: 'N',
+      poster,
+      title: title || null,
+      body: note.trim(),
+      created: now
+    }
+  });
+};
+
+/**
+ * Log a thread event using transaction-bound query functions
+ */
+const logEventTx = async (txQuery, txQueryOne, threadId, eventName, staffId, username, data) => {
+  const event = await txQueryOne(
+    `SELECT id FROM ${db.table('event')} WHERE name = ?`, [eventName]
+  );
+  if (!event) return;
+  await txQuery(`
+    INSERT INTO ${db.table('thread_event')}
+    (thread_id, event_id, staff_id, username, data, timestamp)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `, [threadId, event.id, staffId || 0, username || '', JSON.stringify(data), new Date()]);
+};
+
+/**
+ * Merge duplicate tickets (staff only)
+ */
+const merge = async (req, res) => {
+  const { id } = req.params;
+  const { target_ticket_id } = req.body;
+
+  if (!target_ticket_id) throw ApiError.badRequest('target_ticket_id is required');
+  if (parseInt(id, 10) === parseInt(target_ticket_id, 10)) {
+    throw ApiError.badRequest('Cannot merge a ticket into itself');
+  }
+
+  // Validate both tickets exist (outside transaction — read-only)
+  const sourceTicket = await db.queryOne(
+    `SELECT t.ticket_id, t.number, th.id as thread_id FROM ${db.table('ticket')} t
+     LEFT JOIN ${db.table('thread')} th ON th.object_id = t.ticket_id AND th.object_type = 'T'
+     WHERE t.ticket_id = ?`, [id]
+  );
+  if (!sourceTicket) throw ApiError.notFound('Source ticket not found');
+
+  const targetTicket = await db.queryOne(
+    `SELECT t.ticket_id, t.number, th.id as thread_id FROM ${db.table('ticket')} t
+     LEFT JOIN ${db.table('thread')} th ON th.object_id = t.ticket_id AND th.object_type = 'T'
+     WHERE t.ticket_id = ?`, [target_ticket_id]
+  );
+  if (!targetTicket) throw ApiError.notFound('Target ticket not found');
+
+  const now = new Date();
+  const staffId = req.auth?.id || 0;
+  const username = req.auth?.name || req.auth?.username || 'Staff';
+
+  await db.transaction(async (txQuery, txQueryOne) => {
+    // Move thread entries from source to target
+    if (sourceTicket.thread_id && targetTicket.thread_id) {
+      await txQuery(
+        `UPDATE ${db.table('thread_entry')} SET thread_id = ? WHERE thread_id = ?`,
+        [targetTicket.thread_id, sourceTicket.thread_id]
+      );
+
+      // Move collaborators
+      await txQuery(
+        `UPDATE ${db.table('thread_collaborator')} SET thread_id = ? WHERE thread_id = ?`,
+        [targetTicket.thread_id, sourceTicket.thread_id]
+      );
+    }
+
+    // Close source ticket - find a closed status
+    const closedStatus = await txQueryOne(
+      `SELECT id FROM ${db.table('ticket_status')} WHERE state = 'closed' ORDER BY sort ASC LIMIT 1`
+    );
+    if (closedStatus) {
+      await txQuery(
+        `UPDATE ${db.table('ticket')} SET status_id = ?, closed = ?, updated = ? WHERE ticket_id = ?`,
+        [closedStatus.id, now, now, id]
+      );
+    }
+
+    // Log events
+    if (targetTicket.thread_id) {
+      await logEventTx(txQuery, txQueryOne, targetTicket.thread_id, 'merged', staffId, username, {
+        merged_from: sourceTicket.number, source_ticket_id: parseInt(id, 10)
+      });
+    }
+    if (sourceTicket.thread_id) {
+      await logEventTx(txQuery, txQueryOne, sourceTicket.thread_id, 'merged', staffId, username, {
+        merged_into: targetTicket.number, target_ticket_id: parseInt(target_ticket_id, 10)
+      });
+    }
+  });
+
+  res.json({
+    success: true,
+    message: `Ticket #${sourceTicket.number} merged into #${targetTicket.number}`,
+    data: { target_ticket_id: parseInt(target_ticket_id, 10) }
+  });
 };
 
 /**
@@ -541,5 +892,6 @@ module.exports = {
   update,
   reply,
   addNote,
+  merge,
   createLegacy
 };

@@ -28,6 +28,16 @@ const api = {
       body: JSON.stringify(data)
     });
     return res.json();
+  },
+
+  async put(endpoint, data) {
+    const res = await fetch(`/api/v1${endpoint}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(data)
+    });
+    return res.json();
   }
 };
 
@@ -425,11 +435,105 @@ const views = {
             `).join('')}
           </div>
 
+          ${t.status?.state !== 'closed' ? `
+          <div class="reply-section">
+            <h3>Post a Reply</h3>
+            <form id="replyForm">
+              <div class="form-group">
+                <textarea id="replyMessage" name="message" required rows="4" placeholder="Type your reply..."></textarea>
+              </div>
+              <div class="form-error" id="replyError"></div>
+              <button type="submit" class="btn btn-primary">Send Reply</button>
+            </form>
+          </div>
+          ` : ''}
+
           <div class="ticket-actions">
+            ${t.status?.state !== 'closed' ? `
+              <button class="btn btn-danger" id="closeTicketBtn">Close Ticket</button>
+            ` : `
+              <button class="btn btn-success" id="reopenTicketBtn">Reopen Ticket</button>
+            `}
             <button class="btn" data-state="tickets">&larr; Back to Tickets</button>
           </div>
         </div>
       `;
+
+      // Bind reply form
+      const replyForm = document.getElementById('replyForm');
+      if (replyForm) {
+        replyForm.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const msgEl = document.getElementById('replyMessage');
+          const errorDiv = document.getElementById('replyError');
+          const submitBtn = replyForm.querySelector('button[type="submit"]');
+
+          submitBtn.disabled = true;
+          submitBtn.textContent = 'Sending...';
+          errorDiv.textContent = '';
+
+          try {
+            const res = await api.post(`/tickets/${ticketId}/reply`, { message: msgEl.value });
+            if (res.success) {
+              app.gotoState('ticket', { id: ticketId });
+            } else {
+              errorDiv.textContent = res.message || 'Failed to send reply.';
+            }
+          } catch (err) {
+            errorDiv.textContent = 'Connection error. Please try again.';
+          } finally {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Send Reply';
+          }
+        });
+      }
+
+      // Bind close/reopen buttons
+      const closeBtn = document.getElementById('closeTicketBtn');
+      if (closeBtn) {
+        closeBtn.addEventListener('click', async () => {
+          closeBtn.disabled = true;
+          closeBtn.textContent = 'Closing...';
+          try {
+            const statusRes = await api.get('/statuses');
+            const closedStatus = statusRes.data?.find(s => s.state === 'closed');
+            if (closedStatus) {
+              const res = await api.put(`/tickets/${ticketId}`, { status_id: closedStatus.id });
+              if (res.success) {
+                app.gotoState('ticket', { id: ticketId });
+                return;
+              }
+            }
+            closeBtn.textContent = 'Close failed';
+          } catch (err) {
+            closeBtn.textContent = 'Close failed';
+          }
+          closeBtn.disabled = false;
+        });
+      }
+
+      const reopenBtn = document.getElementById('reopenTicketBtn');
+      if (reopenBtn) {
+        reopenBtn.addEventListener('click', async () => {
+          reopenBtn.disabled = true;
+          reopenBtn.textContent = 'Reopening...';
+          try {
+            const statusRes = await api.get('/statuses');
+            const openStatus = statusRes.data?.find(s => s.state === 'open');
+            if (openStatus) {
+              const res = await api.put(`/tickets/${ticketId}`, { status_id: openStatus.id });
+              if (res.success) {
+                app.gotoState('ticket', { id: ticketId });
+                return;
+              }
+            }
+            reopenBtn.textContent = 'Reopen failed';
+          } catch (err) {
+            reopenBtn.textContent = 'Reopen failed';
+          }
+          reopenBtn.disabled = false;
+        });
+      }
 
       bindStateButtons();
     } catch (e) {

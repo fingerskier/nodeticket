@@ -5,7 +5,7 @@
 const express = require('express');
 const router = express.Router();
 const ticketController = require('../controllers/ticketController');
-const { authenticate, canAccessTicket, requireVerified } = require('../middleware/auth');
+const { authenticate, canAccessTicket, requireStaff, requireVerified } = require('../middleware/auth');
 const { asyncHandler } = require('../middleware/errorHandler');
 
 // GET /api/v1/tickets - List tickets
@@ -29,8 +29,11 @@ router.put('/:id', authenticate, canAccessTicket, asyncHandler(ticketController.
 // POST /api/v1/tickets/:id/reply - Post reply
 router.post('/:id/reply', authenticate, canAccessTicket, asyncHandler(ticketController.reply));
 
-// POST /api/v1/tickets/:id/note - Add internal note
-router.post('/:id/note', authenticate, canAccessTicket, asyncHandler(ticketController.addNote));
+// POST /api/v1/tickets/:id/note - Add internal note (staff only)
+router.post('/:id/note', requireStaff, canAccessTicket, asyncHandler(ticketController.addNote));
+
+// POST /api/v1/tickets/:id/merge - Merge tickets (staff only)
+router.post('/:id/merge', requireStaff, asyncHandler(ticketController.merge));
 
 // Legacy interoperability endpoints
 router.post('/tickets.json', asyncHandler(ticketController.createLegacy));
