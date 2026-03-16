@@ -19,7 +19,19 @@ const { generateCsrfToken, doubleCsrfProtection } = doubleCsrf({
 // Wrapper that ensures req.cookies exists before csrf-csrf runs
 const csrfProtection = (req, res, next) => {
   if (!req.cookies) req.cookies = {};
-  doubleCsrfProtection(req, res, next);
+  doubleCsrfProtection(req, res, (err) => {
+    if (err) {
+      console.error('CSRF validation failed:', {
+        method: req.method,
+        path: req.path,
+        hasCsrfCookie: '__csrf' in (req.cookies || {}),
+        hasCsrfBody: !!req.body?._csrf,
+        hasCsrfHeader: !!req.headers['x-csrf-token'],
+        cookieKeys: Object.keys(req.cookies || {}),
+      });
+    }
+    next(err);
+  });
 };
 
 const safeGenerateCsrfToken = (req, res) => {
