@@ -44,7 +44,7 @@ const list = async (req, res) => {
   }
 
   // Get total count
-  const countSql = sql.replace(/SELECT .* FROM/, 'SELECT COUNT(*) as count FROM');
+  const countSql = sql.replace(/SELECT .*? FROM/s, 'SELECT COUNT(*) as count FROM');
   const countResult = await db.queryOne(countSql, params);
   const total = parseInt(countResult?.count || 0, 10);
 
@@ -248,9 +248,189 @@ const getTickets = async (req, res) => {
   });
 };
 
+/**
+ * Create department
+ */
+const create = async (req, res) => {
+  const { name, pid, manager_id, sla_id, ispublic, signature, flags } = req.body;
+
+  if (!name || name.length < 1) {
+    throw ApiError.badRequest('Name is required');
+  }
+
+  // Build path from parent
+  let path = `/${name}`;
+  if (pid) {
+    const parent = await db.queryOne(`
+      SELECT id, path FROM ${db.table('department')} WHERE id = ?
+    `, [pid]);
+    if (!parent) {
+      throw ApiError.badRequest('Parent department not found');
+    }
+    path = `${parent.path}/${name}`;
+  }
+
+  const now = new Date();
+  const result = await db.query(`
+    INSERT INTO ${db.table('department')} (pid, name, path, manager_id, sla_id, ispublic, signature, flags, created, updated)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [
+    pid || 0,
+    name.trim(),
+    path,
+    manager_id || 0,
+    sla_id || 0,
+    ispublic !== undefined ? (ispublic ? 1 : 0) : 1,
+    signature || null,
+    flags || 0,
+    now,
+    now
+  ]);
+
+  res.status(201).json({
+    success: true,
+    data: {
+      id: result.insertId,
+      name: name.trim(),
+      path,
+      pid: pid || 0,
+      created: now
+    }
+  });
+};
+
+/**
+ * Update department
+ */
+const update = async (req, res) => {
+  const { id } = req.params;
+  const { name, pid, manager_id, sla_id, ispublic, signature, flags } = req.body;
+
+  const dept = await db.queryOne(`
+    SELECT * FROM ${db.table('department')} WHERE id = ?
+  `, [id]);
+
+  if (!dept) {
+    throw ApiError.notFound('Department not found');
+  }
+
+  const updates = [];
+  const params = [];
+
+  if (name !== undefined) { updates.push('name = ?'); params.push(name.trim()); }
+  if (manager_id !== undefined) { updates.push('manager_id = ?'); params.push(manager_id); }
+  if (sla_id !== undefined) { updates.push('sla_id = ?'); params.push(sla_id); }
+  if (ispublic !== undefined) { updates.push('ispublic = ?'); params.push(ispublic ? 1 : 0); }
+  if (signature !== undefined) { updates.push('signature = ?'); params.push(signature); }
+  if (flags !== undefined) { updates.push('flags = ?'); params.push(flags); }
+
+  // If pid or name changes, recalculate path
+  let descendantUpdates = [];
+  if (pid !== undefined || name !== undefined) {
+    const newPid = pid !== undefined ? pid : dept.pid;
+    const newName = name !== undefined ? name.trim() : dept.name;
+
+    let newPath = `/${newName}`;
+    if (newPid) {
+      const parent = await db.queryOne(`
+        SELECT path FROM ${db.table('department')} WHERE id = ?
+      `, [newPid]);
+      if (parent) {
+        newPath = `${parent.path}/${newName}`;
+      }
+    }
+
+    if (pid !== undefined) { updates.push('pid = ?'); params.push(pid); }
+    updates.push('path = ?');
+    params.push(newPath);
+
+    // Prepare descendant path updates
+    const oldPath = dept.path;
+    if (newPath !== oldPath) {
+      const descendants = await db.query(`
+        SELECT id, path FROM ${db.table('department')} WHERE path LIKE ?
+      `, [`${oldPath}/%`]);
+
+      descendantUpdates = descendants.map(desc => ({
+        id: desc.id,
+        path: desc.path.replace(oldPath, newPath)
+      }));
+    }
+  }
+
+  if (updates.length === 0) {
+    throw ApiError.badRequest('No fields to update');
+  }
+
+  updates.push('updated = ?');
+  params.push(new Date());
+  params.push(id);
+
+  // Wrap main update + descendant path updates in a transaction
+  await db.transaction(async (txQuery) => {
+    await txQuery(`
+      UPDATE ${db.table('department')} SET ${updates.join(', ')} WHERE id = ?
+    `, params);
+
+    for (const desc of descendantUpdates) {
+      await txQuery(`
+        UPDATE ${db.table('department')} SET path = ? WHERE id = ?
+      `, [desc.path, desc.id]);
+    }
+  });
+
+  res.json({ success: true, message: 'Department updated' });
+};
+
+/**
+ * Delete department
+ */
+const remove = async (req, res) => {
+  const { id } = req.params;
+
+  const dept = await db.queryOne(`
+    SELECT id FROM ${db.table('department')} WHERE id = ?
+  `, [id]);
+
+  if (!dept) {
+    throw ApiError.notFound('Department not found');
+  }
+
+  // Check child departments
+  const childCount = await db.queryValue(`
+    SELECT COUNT(*) FROM ${db.table('department')} WHERE pid = ?
+  `, [id]);
+  if (parseInt(childCount || 0, 10) > 0) {
+    throw ApiError.conflict('Cannot delete department: has child departments');
+  }
+
+  // Check staff
+  const staffCount = await db.queryValue(`
+    SELECT COUNT(*) FROM ${db.table('staff')} WHERE dept_id = ?
+  `, [id]);
+  if (parseInt(staffCount || 0, 10) > 0) {
+    throw ApiError.conflict('Cannot delete department: staff members are assigned');
+  }
+
+  // Check tickets
+  const ticketCount = await db.queryValue(`
+    SELECT COUNT(*) FROM ${db.table('ticket')} WHERE dept_id = ?
+  `, [id]);
+  if (parseInt(ticketCount || 0, 10) > 0) {
+    throw ApiError.conflict('Cannot delete department: tickets are assigned');
+  }
+
+  await db.query(`DELETE FROM ${db.table('department')} WHERE id = ?`, [id]);
+
+  res.json({ success: true, message: 'Department deleted' });
+};
+
 module.exports = {
   list,
   get,
   getStaff,
-  getTickets
+  getTickets,
+  create,
+  update,
+  remove
 };

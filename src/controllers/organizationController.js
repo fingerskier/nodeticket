@@ -37,7 +37,7 @@ const list = async (req, res) => {
   }
 
   // Get total count
-  const countSql = sql.replace(/SELECT .* FROM/, 'SELECT COUNT(*) as count FROM');
+  const countSql = sql.replace(/SELECT .*? FROM/s, 'SELECT COUNT(*) as count FROM');
   const countResult = await db.queryOne(countSql, params);
   const total = parseInt(countResult?.count || 0, 10);
 
@@ -222,9 +222,134 @@ const getTickets = async (req, res) => {
   });
 };
 
+/**
+ * Create organization
+ */
+const create = async (req, res) => {
+  const { name, domain, status, manager, extra } = req.body;
+
+  if (!name || name.length < 1 || name.length > 128) {
+    throw ApiError.badRequest('Name is required (1-128 characters)');
+  }
+
+  const existing = await db.queryOne(`
+    SELECT id FROM ${db.table('organization')} WHERE name = ?
+  `, [name]);
+
+  if (existing) {
+    throw ApiError.conflict('An organization with this name already exists');
+  }
+
+  const now = new Date();
+  const result = await db.query(`
+    INSERT INTO ${db.table('organization')} (name, domain, status, manager, extra, created, updated)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `, [
+    name.trim(),
+    domain || null,
+    status || 0,
+    manager || null,
+    extra ? JSON.stringify(extra) : null,
+    now,
+    now
+  ]);
+
+  res.status(201).json({
+    success: true,
+    data: {
+      id: result.insertId,
+      name: name.trim(),
+      domain: domain || null,
+      status: status || 0,
+      created: now
+    }
+  });
+};
+
+/**
+ * Update organization
+ */
+const update = async (req, res) => {
+  const { id } = req.params;
+  const { name, domain, status, manager, extra } = req.body;
+
+  const org = await db.queryOne(`
+    SELECT id FROM ${db.table('organization')} WHERE id = ?
+  `, [id]);
+
+  if (!org) {
+    throw ApiError.notFound('Organization not found');
+  }
+
+  if (name !== undefined) {
+    if (name.length < 1 || name.length > 128) {
+      throw ApiError.badRequest('Name must be 1-128 characters');
+    }
+    const existing = await db.queryOne(`
+      SELECT id FROM ${db.table('organization')} WHERE name = ? AND id != ?
+    `, [name, id]);
+    if (existing) {
+      throw ApiError.conflict('An organization with this name already exists');
+    }
+  }
+
+  const updates = [];
+  const params = [];
+
+  if (name !== undefined) { updates.push('name = ?'); params.push(name.trim()); }
+  if (domain !== undefined) { updates.push('domain = ?'); params.push(domain); }
+  if (status !== undefined) { updates.push('status = ?'); params.push(status); }
+  if (manager !== undefined) { updates.push('manager = ?'); params.push(manager); }
+  if (extra !== undefined) { updates.push('extra = ?'); params.push(JSON.stringify(extra)); }
+
+  if (updates.length === 0) {
+    throw ApiError.badRequest('No fields to update');
+  }
+
+  updates.push('updated = ?');
+  params.push(new Date());
+  params.push(id);
+
+  await db.query(`
+    UPDATE ${db.table('organization')} SET ${updates.join(', ')} WHERE id = ?
+  `, params);
+
+  res.json({ success: true, message: 'Organization updated' });
+};
+
+/**
+ * Delete organization
+ */
+const remove = async (req, res) => {
+  const { id } = req.params;
+
+  const org = await db.queryOne(`
+    SELECT id FROM ${db.table('organization')} WHERE id = ?
+  `, [id]);
+
+  if (!org) {
+    throw ApiError.notFound('Organization not found');
+  }
+
+  const userCount = await db.queryValue(`
+    SELECT COUNT(*) FROM ${db.table('user')} WHERE org_id = ?
+  `, [id]);
+
+  if (parseInt(userCount || 0, 10) > 0) {
+    throw ApiError.conflict('Cannot delete organization: users are assigned to it');
+  }
+
+  await db.query(`DELETE FROM ${db.table('organization')} WHERE id = ?`, [id]);
+
+  res.json({ success: true, message: 'Organization deleted' });
+};
+
 module.exports = {
   list,
   get,
   getUsers,
-  getTickets
+  getTickets,
+  create,
+  update,
+  remove
 };

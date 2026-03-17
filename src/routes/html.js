@@ -550,6 +550,177 @@ router.get('/faq', asyncHandler(async (req, res) => {
 }));
 
 /**
+ * Profile edit page
+ */
+router.get('/profile', asyncHandler(async (req, res) => {
+  if (!req.session?.user) {
+    return res.redirect('/login');
+  }
+
+  const base = await getBaseData(req);
+  const userId = req.session.user.id;
+
+  const user = await db.queryOne(`SELECT * FROM ${db.table('user')} WHERE id = ?`, [userId]);
+  if (!user) return res.redirect('/');
+
+  const csrfToken = req.csrfToken ? req.csrfToken() : '';
+  const content = `
+    <div class="auth-form" style="max-width:500px">
+      <h2>Edit Profile</h2>
+      ${req.query.success ? '<div class="alert alert-success">Profile updated.</div>' : ''}
+      <form action="/profile" method="POST">
+        <input type="hidden" name="_csrf" value="${csrfToken}">
+        <div class="form-group">
+          <label for="name">Name</label>
+          <input type="text" id="name" name="name" value="${escapeHtml(user.name || '')}" required>
+        </div>
+        <div class="form-group">
+          <label for="timezone">Timezone</label>
+          <input type="text" id="timezone" name="timezone" value="${escapeHtml(user.timezone || '')}" placeholder="e.g. America/Denver">
+        </div>
+        <div class="form-group">
+          <label for="lang">Language</label>
+          <input type="text" id="lang" name="lang" value="${escapeHtml(user.lang || '')}" placeholder="e.g. en_US">
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%">Update Profile</button>
+      </form>
+      <p style="text-align:center; margin-top:16px; font-size:0.875rem">
+        <a href="/change-password">Change Password</a>
+      </p>
+    </div>
+  `;
+
+  res.send(renderPage('Edit Profile', content, base));
+}));
+
+/**
+ * Handle profile update
+ */
+router.post('/profile', express.urlencoded({ extended: true }), asyncHandler(async (req, res) => {
+  if (!req.session?.user) {
+    return res.redirect('/login');
+  }
+
+  const userId = req.session.user.id;
+  const { name, timezone, lang } = req.body;
+
+  const updates = [];
+  const params = [];
+
+  if (name) { updates.push('name = ?'); params.push(name.trim()); }
+  if (timezone !== undefined) { updates.push('timezone = ?'); params.push(timezone || null); }
+  if (lang !== undefined) { updates.push('lang = ?'); params.push(lang || null); }
+
+  if (updates.length > 0) {
+    updates.push('updated = ?');
+    params.push(new Date());
+    params.push(userId);
+    await db.query(`UPDATE ${db.table('user')} SET ${updates.join(', ')} WHERE id = ?`, params);
+
+    // Update session name
+    if (name) req.session.user.name = name.trim();
+  }
+
+  res.redirect('/profile?success=1');
+}));
+
+/**
+ * Change password page
+ */
+router.get('/change-password', asyncHandler(async (req, res) => {
+  if (!req.session?.user) {
+    return res.redirect('/login');
+  }
+
+  const base = await getBaseData(req);
+  const csrfToken = req.csrfToken ? req.csrfToken() : '';
+
+  const content = `
+    <div class="auth-form">
+      <h2>Change Password</h2>
+      ${req.query.error ? `<div class="alert alert-danger">${escapeHtml(req.query.error)}</div>` : ''}
+      ${req.query.success ? '<div class="alert alert-success">Password changed successfully.</div>' : ''}
+      <form action="/change-password" method="POST">
+        <input type="hidden" name="_csrf" value="${csrfToken}">
+        <div class="form-group">
+          <label for="current_password">Current Password</label>
+          <input type="password" id="current_password" name="current_password" required>
+        </div>
+        <div class="form-group">
+          <label for="new_password">New Password</label>
+          <input type="password" id="new_password" name="new_password" required minlength="8">
+        </div>
+        <div class="form-group">
+          <label for="confirm_password">Confirm New Password</label>
+          <input type="password" id="confirm_password" name="confirm_password" required minlength="8">
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%">Change Password</button>
+      </form>
+      <p style="text-align:center; margin-top:16px; font-size:0.875rem">
+        <a href="/profile">&larr; Back to Profile</a>
+      </p>
+    </div>
+  `;
+
+  res.send(renderPage('Change Password', content, base));
+}));
+
+/**
+ * Handle password change
+ */
+router.post('/change-password', express.urlencoded({ extended: true }), asyncHandler(async (req, res) => {
+  if (!req.session?.user) {
+    return res.redirect('/login');
+  }
+
+  const userId = req.session.user.id;
+  const { current_password, new_password, confirm_password } = req.body;
+
+  if (!current_password || !new_password) {
+    return res.redirect('/change-password?error=All fields are required');
+  }
+
+  if (new_password !== confirm_password) {
+    return res.redirect('/change-password?error=Passwords do not match');
+  }
+
+  if (new_password.length < 8) {
+    return res.redirect('/change-password?error=Password must be at least 8 characters');
+  }
+
+  const bcrypt = require('bcryptjs');
+
+  // Determine account type
+  const userType = req.session.user.type;
+  let account;
+
+  if (userType === 'staff') {
+    account = await db.queryOne(`SELECT passwd FROM ${db.table('staff')} WHERE staff_id = ?`, [userId]);
+  } else {
+    account = await db.queryOne(`SELECT passwd FROM ${db.table('user_account')} WHERE user_id = ?`, [userId]);
+  }
+
+  if (!account) {
+    return res.redirect('/change-password?error=Account not found');
+  }
+
+  const valid = await bcrypt.compare(current_password, account.passwd);
+  if (!valid) {
+    return res.redirect('/change-password?error=Current password is incorrect');
+  }
+
+  const hashedPassword = await bcrypt.hash(new_password, 10);
+
+  if (userType === 'staff') {
+    await db.query(`UPDATE ${db.table('staff')} SET passwd = ?, updated = ? WHERE staff_id = ?`, [hashedPassword, new Date(), userId]);
+  } else {
+    await db.query(`UPDATE ${db.table('user_account')} SET passwd = ? WHERE user_id = ?`, [hashedPassword, userId]);
+  }
+
+  res.redirect('/change-password?success=1');
+}));
+
+/**
  * Helper functions
  */
 function escapeHtml(str) {

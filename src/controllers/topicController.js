@@ -46,7 +46,7 @@ const list = async (req, res) => {
   }
 
   // Get total count
-  const countSql = sql.replace(/SELECT .* FROM/, 'SELECT COUNT(*) as count FROM');
+  const countSql = sql.replace(/SELECT .*? FROM/s, 'SELECT COUNT(*) as count FROM');
   const countResult = await db.queryOne(countSql, params);
   const total = parseInt(countResult?.count || 0, 10);
 

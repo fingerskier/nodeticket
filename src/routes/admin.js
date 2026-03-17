@@ -69,6 +69,7 @@ const renderAdminPage = (title, content, base, activeNav = '') => `
       <a href="/admin/departments" class="${activeNav === 'departments' ? 'active' : ''}">Departments</a>
       <a href="/admin/teams" class="${activeNav === 'teams' ? 'active' : ''}">Teams</a>
       <a href="/admin/organizations" class="${activeNav === 'organizations' ? 'active' : ''}">Organizations</a>
+      <a href="/admin/roles" class="${activeNav === 'roles' ? 'active' : ''}">Roles</a>
       <a href="/admin/topics" class="${activeNav === 'topics' ? 'active' : ''}">Help Topics</a>
       <a href="/admin/sla" class="${activeNav === 'sla' ? 'active' : ''}">SLA Plans</a>
       <a href="/admin/faq" class="${activeNav === 'faq' ? 'active' : ''}">FAQ</a>
@@ -340,7 +341,7 @@ router.get('/tickets', asyncHandler(async (req, res) => {
     }
 
     // Get total count
-    const countSql = sql.replace(/SELECT .* FROM/, 'SELECT COUNT(*) as count FROM');
+    const countSql = sql.replace(/SELECT .*? FROM/s, 'SELECT COUNT(*) as count FROM');
     const total = parseInt((await db.queryOne(countSql, params))?.count || 0, 10);
 
     sql += ` ORDER BY t.created DESC LIMIT ? OFFSET ?`;
@@ -488,7 +489,7 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
                 <span class="entry-date">${formatDate(e.created)}</span>
               </div>
               ${e.title ? `<div class="entry-title">${escapeHtml(e.title)}</div>` : ''}
-              <div class="entry-body">${e.body}</div>
+              <div class="entry-body">${escapeHtml(e.body)}</div>
             </div>
           `).join('')}
         </div>
@@ -570,6 +571,7 @@ router.get('/users', asyncHandler(async (req, res) => {
         <input type="text" name="search" placeholder="Search users..." value="${escapeHtml(search || '')}">
         <button type="submit" class="btn">Search</button>
       </form>
+      ${base.isAdmin ? '<a href="/admin/users/create" class="btn btn-primary">Create User</a>' : ''}
     </div>
     ${usersHtml}
   `;
@@ -618,7 +620,16 @@ router.get('/users/:id', asyncHandler(async (req, res) => {
           ${emails.map(e => `<li>${escapeHtml(e.address)} ${e.id === user.default_email_id ? '(Primary)' : ''}</li>`).join('')}
         </ul>
 
-        <p><a href="/admin/users" class="btn">&larr; Back to Users</a></p>
+        <div class="detail-actions">
+          <a href="/admin/users" class="btn">&larr; Back to Users</a>
+          ${base.isAdmin ? `
+            <a href="/admin/users/${user.id}/edit" class="btn btn-primary">Edit</a>
+            <form method="POST" action="/admin/users/${user.id}/delete" style="display:inline" onsubmit="return confirm('Delete this user?')">
+              <input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">
+              <button type="submit" class="btn btn-danger">Delete</button>
+            </form>
+          ` : ''}
+        </div>
       </div>
     `;
 
@@ -683,7 +694,11 @@ router.get('/staff', asyncHandler(async (req, res) => {
     staffHtml = '<p class="error">Error loading staff.</p>';
   }
 
-  res.send(renderAdminPage('Staff', staffHtml, base, 'staff'));
+  const staffContent = `
+    ${base.isAdmin ? '<div class="filters"><a href="/admin/staff/create" class="btn btn-primary">Create Staff</a></div>' : ''}
+    ${staffHtml}
+  `;
+  res.send(renderAdminPage('Staff', staffContent, base, 'staff'));
 }));
 
 /**
@@ -735,7 +750,11 @@ router.get('/departments', asyncHandler(async (req, res) => {
     deptsHtml = '<p class="error">Error loading departments.</p>';
   }
 
-  res.send(renderAdminPage('Departments', deptsHtml, base, 'departments'));
+  const deptsContent = `
+    ${base.isAdmin ? '<div class="filters"><a href="/admin/departments/create" class="btn btn-primary">Create Department</a></div>' : ''}
+    ${deptsHtml}
+  `;
+  res.send(renderAdminPage('Departments', deptsContent, base, 'departments'));
 }));
 
 /**
@@ -782,7 +801,11 @@ router.get('/teams', asyncHandler(async (req, res) => {
     teamsHtml = '<p class="error">Error loading teams.</p>';
   }
 
-  res.send(renderAdminPage('Teams', teamsHtml, base, 'teams'));
+  const teamsContent = `
+    ${base.isAdmin ? '<div class="filters"><a href="/admin/teams/create" class="btn btn-primary">Create Team</a></div>' : ''}
+    ${teamsHtml}
+  `;
+  res.send(renderAdminPage('Teams', teamsContent, base, 'teams'));
 }));
 
 /**
@@ -830,7 +853,11 @@ router.get('/organizations', asyncHandler(async (req, res) => {
     orgsHtml = '<p class="error">Error loading organizations.</p>';
   }
 
-  res.send(renderAdminPage('Organizations', orgsHtml, base, 'organizations'));
+  const orgsContent = `
+    ${base.isAdmin ? '<div class="filters"><a href="/admin/organizations/create" class="btn btn-primary">Create Organization</a></div>' : ''}
+    ${orgsHtml}
+  `;
+  res.send(renderAdminPage('Organizations', orgsContent, base, 'organizations'));
 }));
 
 /**
@@ -1242,6 +1269,857 @@ router.post('/api-keys/:id/delete', requireAdmin, asyncHandler(async (req, res) 
     const content = `<p class="error">Error deleting API key: ${escapeHtml(e.message)}</p><p><a href="/admin/api-keys" class="btn">Back</a></p>`;
     res.status(500).send(renderAdminPage('Error', content, base, 'api-keys'));
   }
+}));
+
+// ══════════════════════════════════════════
+// Role CRUD
+// ══════════════════════════════════════════
+
+router.get('/roles', asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  let rolesHtml = '<p>No roles found.</p>';
+
+  try {
+    const roles = await db.query(`SELECT * FROM ${db.table('role')} ORDER BY name`);
+    if (roles.length > 0) {
+      rolesHtml = `
+        <table class="data-table">
+          <thead><tr><th>Name</th><th>Flags</th><th>Notes</th></tr></thead>
+          <tbody>
+            ${roles.map(r => `
+              <tr>
+                <td><a href="/admin/roles/${r.id}">${escapeHtml(r.name)}</a></td>
+                <td>${r.flags || 0}</td>
+                <td>${escapeHtml(r.notes || '-')}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+  } catch (e) {
+    rolesHtml = `<p class="error">Error loading roles: ${escapeHtml(e.message)}</p>`;
+  }
+
+  const content = `
+    ${base.isAdmin ? '<div class="filters"><a href="/admin/roles/create" class="btn btn-primary">Create Role</a></div>' : ''}
+    ${rolesHtml}
+  `;
+  res.send(renderAdminPage('Roles', content, base, 'roles'));
+}));
+
+router.get('/roles/create', requireAdmin, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const csrfToken = req.csrfToken ? req.csrfToken() : '';
+  const content = `
+    <form method="POST" action="/admin/roles">
+      <input type="hidden" name="_csrf" value="${csrfToken}">
+      <div class="form-group"><label>Name</label><input type="text" name="name" required maxlength="64"></div>
+      <div class="form-group"><label>Notes</label><textarea name="notes" rows="3"></textarea></div>
+      <div class="form-group"><label>Flags</label><input type="number" name="flags" value="0"></div>
+      <button type="submit" class="btn btn-primary">Create Role</button>
+      <a href="/admin/roles" class="btn">Cancel</a>
+    </form>
+  `;
+  res.send(renderAdminPage('Create Role', content, base, 'roles'));
+}));
+
+router.post('/roles', requireAdmin, asyncHandler(async (req, res) => {
+  const { name, notes, flags } = req.body;
+  const now = new Date();
+  await db.query(`INSERT INTO ${db.table('role')} (name, permissions, flags, notes, created, updated) VALUES (?, NULL, ?, ?, ?, ?)`,
+    [name.trim(), parseInt(flags, 10) || 0, notes || null, now, now]);
+  res.redirect('/admin/roles');
+}));
+
+router.get('/roles/:id', asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const role = await db.queryOne(`SELECT * FROM ${db.table('role')} WHERE id = ?`, [req.params.id]);
+  if (!role) return res.send(renderAdminPage('Not Found', '<p>Role not found.</p>', base, 'roles'));
+
+  let permissions = {};
+  try { permissions = role.permissions ? JSON.parse(role.permissions) : {}; } catch (e) {}
+
+  const content = `
+    <div class="detail-view">
+      <h2>${escapeHtml(role.name)}</h2>
+      <div class="detail-meta">
+        <p><strong>Flags:</strong> ${role.flags || 0}</p>
+        <p><strong>Notes:</strong> ${escapeHtml(role.notes || 'None')}</p>
+        <p><strong>Permissions:</strong> <pre>${escapeHtml(JSON.stringify(permissions, null, 2))}</pre></p>
+      </div>
+      <div class="detail-actions">
+        <a href="/admin/roles" class="btn">&larr; Back</a>
+        ${base.isAdmin ? `
+          <a href="/admin/roles/${role.id}/edit" class="btn btn-primary">Edit</a>
+          <form method="POST" action="/admin/roles/${role.id}/delete" style="display:inline" onsubmit="return confirm('Delete this role?')">
+            <input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">
+            <button type="submit" class="btn btn-danger">Delete</button>
+          </form>
+        ` : ''}
+      </div>
+    </div>
+  `;
+  res.send(renderAdminPage(role.name, content, base, 'roles'));
+}));
+
+router.get('/roles/:id/edit', requireAdmin, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const role = await db.queryOne(`SELECT * FROM ${db.table('role')} WHERE id = ?`, [req.params.id]);
+  if (!role) return res.send(renderAdminPage('Not Found', '<p>Role not found.</p>', base, 'roles'));
+
+  const csrfToken = req.csrfToken ? req.csrfToken() : '';
+  const content = `
+    <form method="POST" action="/admin/roles/${role.id}">
+      <input type="hidden" name="_csrf" value="${csrfToken}">
+      <div class="form-group"><label>Name</label><input type="text" name="name" value="${escapeHtml(role.name)}" required maxlength="64"></div>
+      <div class="form-group"><label>Notes</label><textarea name="notes" rows="3">${escapeHtml(role.notes || '')}</textarea></div>
+      <div class="form-group"><label>Flags</label><input type="number" name="flags" value="${role.flags || 0}"></div>
+      <button type="submit" class="btn btn-primary">Update Role</button>
+      <a href="/admin/roles/${role.id}" class="btn">Cancel</a>
+    </form>
+  `;
+  res.send(renderAdminPage('Edit Role', content, base, 'roles'));
+}));
+
+router.post('/roles/:id', requireAdmin, asyncHandler(async (req, res) => {
+  const { name, notes, flags } = req.body;
+  await db.query(`UPDATE ${db.table('role')} SET name = ?, notes = ?, flags = ?, updated = ? WHERE id = ?`,
+    [name.trim(), notes || null, parseInt(flags, 10) || 0, new Date(), req.params.id]);
+  res.redirect(`/admin/roles/${req.params.id}`);
+}));
+
+router.post('/roles/:id/delete', requireAdmin, asyncHandler(async (req, res) => {
+  const staffCount = await db.queryValue(`SELECT COUNT(*) FROM ${db.table('staff')} WHERE role_id = ?`, [req.params.id]);
+  if (parseInt(staffCount || 0, 10) > 0) {
+    const base = await getAdminData(req);
+    return res.status(400).send(renderAdminPage('Error', '<p class="error">Cannot delete: staff are assigned to this role.</p><p><a href="/admin/roles" class="btn">Back</a></p>', base, 'roles'));
+  }
+  await db.query(`DELETE FROM ${db.table('role')} WHERE id = ?`, [req.params.id]);
+  res.redirect('/admin/roles');
+}));
+
+// ══════════════════════════════════════════
+// User CRUD Forms
+// ══════════════════════════════════════════
+
+router.get('/users/create', requireAdmin, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const orgs = await db.query(`SELECT id, name FROM ${db.table('organization')} ORDER BY name`);
+  const csrfToken = req.csrfToken ? req.csrfToken() : '';
+
+  const content = `
+    <form method="POST" action="/admin/users">
+      <input type="hidden" name="_csrf" value="${csrfToken}">
+      <div class="form-group"><label>Name *</label><input type="text" name="name" required></div>
+      <div class="form-group"><label>Email *</label><input type="email" name="email" required></div>
+      <div class="form-group"><label>Organization</label>
+        <select name="org_id"><option value="0">None</option>${orgs.map(o => `<option value="${o.id}">${escapeHtml(o.name)}</option>`).join('')}</select>
+      </div>
+      <div class="form-group"><label>Username (for login)</label><input type="text" name="username"></div>
+      <div class="form-group"><label>Password (min 8 chars)</label><input type="password" name="password" minlength="8"></div>
+      <button type="submit" class="btn btn-primary">Create User</button>
+      <a href="/admin/users" class="btn">Cancel</a>
+    </form>
+  `;
+  res.send(renderAdminPage('Create User', content, base, 'users'));
+}));
+
+router.post('/users', requireAdmin, asyncHandler(async (req, res) => {
+  const { name, email, org_id, username, password } = req.body;
+
+  // Validate email uniqueness
+  const existingEmail = await db.queryOne(`SELECT id FROM ${db.table('user_email')} WHERE address = ?`, [email.trim()]);
+  if (existingEmail) {
+    const base = await getAdminData(req);
+    return res.status(400).send(renderAdminPage('Error', `<p class="error">Email "${escapeHtml(email)}" already exists.</p><p><a href="/admin/users/create" class="btn">Back</a></p>`, base, 'users'));
+  }
+
+  const now = new Date();
+  const bcrypt = require('bcryptjs');
+
+  await db.transaction(async (txQuery) => {
+    const userResult = await txQuery(`INSERT INTO ${db.table('user')} (org_id, default_email_id, name, status, created, updated) VALUES (?, 0, ?, 0, ?, ?)`,
+      [parseInt(org_id, 10) || 0, name.trim(), now, now]);
+    const userId = userResult.insertId;
+    const emailResult = await txQuery(`INSERT INTO ${db.table('user_email')} (user_id, address, flags) VALUES (?, ?, 0)`, [userId, email.trim()]);
+    await txQuery(`UPDATE ${db.table('user')} SET default_email_id = ? WHERE id = ?`, [emailResult.insertId, userId]);
+    if (username && password && password.length >= 8) {
+      const hash = await bcrypt.hash(password, 10);
+      await txQuery(`INSERT INTO ${db.table('user_account')} (user_id, username, passwd, status) VALUES (?, ?, ?, 1)`, [userId, username, hash]);
+    }
+    res.redirect(`/admin/users/${userId}`);
+  });
+}));
+
+router.get('/users/:id/edit', requireAdmin, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const user = await db.queryOne(`SELECT * FROM ${db.table('user')} WHERE id = ?`, [req.params.id]);
+  if (!user) return res.send(renderAdminPage('Not Found', '<p>User not found.</p>', base, 'users'));
+
+  const orgs = await db.query(`SELECT id, name FROM ${db.table('organization')} ORDER BY name`);
+  const csrfToken = req.csrfToken ? req.csrfToken() : '';
+
+  const content = `
+    <form method="POST" action="/admin/users/${user.id}">
+      <input type="hidden" name="_csrf" value="${csrfToken}">
+      <div class="form-group"><label>Name</label><input type="text" name="name" value="${escapeHtml(user.name)}" required></div>
+      <div class="form-group"><label>Organization</label>
+        <select name="org_id"><option value="0">None</option>${orgs.map(o => `<option value="${o.id}" ${o.id === user.org_id ? 'selected' : ''}>${escapeHtml(o.name)}</option>`).join('')}</select>
+      </div>
+      <div class="form-group"><label>Status</label>
+        <select name="status"><option value="0" ${user.status === 0 ? 'selected' : ''}>Active</option><option value="1" ${user.status === 1 ? 'selected' : ''}>Inactive</option></select>
+      </div>
+      <button type="submit" class="btn btn-primary">Update User</button>
+      <a href="/admin/users/${user.id}" class="btn">Cancel</a>
+    </form>
+  `;
+  res.send(renderAdminPage('Edit User', content, base, 'users'));
+}));
+
+router.post('/users/:id', requireAdmin, asyncHandler(async (req, res) => {
+  const { name, org_id, status } = req.body;
+  await db.query(`UPDATE ${db.table('user')} SET name = ?, org_id = ?, status = ?, updated = ? WHERE id = ?`,
+    [name.trim(), parseInt(org_id, 10) || 0, parseInt(status, 10) || 0, new Date(), req.params.id]);
+  res.redirect(`/admin/users/${req.params.id}`);
+}));
+
+router.post('/users/:id/delete', requireAdmin, asyncHandler(async (req, res) => {
+  const ticketCount = await db.queryValue(`SELECT COUNT(*) FROM ${db.table('ticket')} WHERE user_id = ?`, [req.params.id]);
+  if (parseInt(ticketCount || 0, 10) > 0) {
+    const base = await getAdminData(req);
+    return res.status(400).send(renderAdminPage('Error', '<p class="error">Cannot delete: user has tickets.</p><p><a href="/admin/users" class="btn">Back</a></p>', base, 'users'));
+  }
+  await db.transaction(async (txQuery) => {
+    await txQuery(`DELETE FROM ${db.table('user_account')} WHERE user_id = ?`, [req.params.id]);
+    await txQuery(`DELETE FROM ${db.table('user_email')} WHERE user_id = ?`, [req.params.id]);
+    await txQuery(`DELETE FROM ${db.table('user')} WHERE id = ?`, [req.params.id]);
+  });
+  res.redirect('/admin/users');
+}));
+
+// ══════════════════════════════════════════
+// Staff Detail View
+// ══════════════════════════════════════════
+
+router.get('/staff/:id', asyncHandler(async (req, res, next) => {
+  if (req.params.id === 'create') return next(); // Skip, handled by create route
+  const base = await getAdminData(req);
+  const staff = await db.queryOne(`
+    SELECT s.*, d.name as dept_name, r.name as role_name
+    FROM ${db.table('staff')} s
+    LEFT JOIN ${db.table('department')} d ON s.dept_id = d.id
+    LEFT JOIN ${db.table('role')} r ON s.role_id = r.id
+    WHERE s.staff_id = ?
+  `, [req.params.id]);
+
+  if (!staff) return res.send(renderAdminPage('Not Found', '<p>Staff member not found.</p>', base, 'staff'));
+
+  const teams = await db.query(`
+    SELECT t.name FROM ${db.table('team_member')} tm
+    JOIN ${db.table('team')} t ON tm.team_id = t.team_id WHERE tm.staff_id = ?
+  `, [req.params.id]);
+
+  const content = `
+    <div class="detail-view">
+      <h2>${escapeHtml(`${staff.firstname || ''} ${staff.lastname || ''}`.trim() || staff.username)}</h2>
+      <div class="detail-meta">
+        <p><strong>Username:</strong> ${escapeHtml(staff.username)}</p>
+        <p><strong>Email:</strong> ${escapeHtml(staff.email || 'N/A')}</p>
+        <p><strong>Phone:</strong> ${escapeHtml(staff.phone || 'N/A')}</p>
+        <p><strong>Department:</strong> ${escapeHtml(staff.dept_name || 'N/A')}</p>
+        <p><strong>Role:</strong> ${escapeHtml(staff.role_name || 'N/A')}</p>
+        <p><strong>Status:</strong> ${staff.isactive ? 'Active' : 'Inactive'} ${staff.isadmin ? '(Admin)' : ''} ${staff.onvacation ? '(Vacation)' : ''}</p>
+        <p><strong>Teams:</strong> ${teams.length > 0 ? teams.map(t => escapeHtml(t.name)).join(', ') : 'None'}</p>
+        <p><strong>Created:</strong> ${formatDate(staff.created)}</p>
+      </div>
+      <div class="detail-actions">
+        <a href="/admin/staff" class="btn">&larr; Back to Staff</a>
+        ${base.isAdmin ? `
+          <a href="/admin/staff/${staff.staff_id}/edit" class="btn btn-primary">Edit</a>
+          <form method="POST" action="/admin/staff/${staff.staff_id}/delete" style="display:inline" onsubmit="return confirm('Delete this staff member?')">
+            <input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">
+            <button type="submit" class="btn btn-danger">Delete</button>
+          </form>
+        ` : ''}
+      </div>
+    </div>
+  `;
+  res.send(renderAdminPage(`${staff.firstname} ${staff.lastname}`, content, base, 'staff'));
+}));
+
+// ══════════════════════════════════════════
+// Department Detail View
+// ══════════════════════════════════════════
+
+router.get('/departments/:id', asyncHandler(async (req, res, next) => {
+  if (req.params.id === 'create') return next();
+  const base = await getAdminData(req);
+  const dept = await db.queryOne(`
+    SELECT d.*, s.firstname, s.lastname, sla.name as sla_name
+    FROM ${db.table('department')} d
+    LEFT JOIN ${db.table('staff')} s ON d.manager_id = s.staff_id
+    LEFT JOIN ${db.table('sla')} sla ON d.sla_id = sla.id
+    WHERE d.id = ?
+  `, [req.params.id]);
+
+  if (!dept) return res.send(renderAdminPage('Not Found', '<p>Department not found.</p>', base, 'departments'));
+
+  const staffCount = await db.queryValue(`SELECT COUNT(*) FROM ${db.table('staff')} WHERE dept_id = ?`, [req.params.id]);
+  const ticketCount = await db.queryValue(`SELECT COUNT(*) FROM ${db.table('ticket')} t JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id WHERE t.dept_id = ? AND ts.state = 'open'`, [req.params.id]);
+
+  const content = `
+    <div class="detail-view">
+      <h2>${escapeHtml(dept.name)}</h2>
+      <div class="detail-meta">
+        <p><strong>Path:</strong> ${escapeHtml(dept.path || '/')}</p>
+        <p><strong>Manager:</strong> ${dept.manager_id ? escapeHtml(`${dept.firstname} ${dept.lastname}`.trim()) : 'None'}</p>
+        <p><strong>SLA:</strong> ${escapeHtml(dept.sla_name || 'Default')}</p>
+        <p><strong>Visibility:</strong> ${dept.ispublic ? 'Public' : 'Private'}</p>
+        <p><strong>Active Staff:</strong> ${staffCount || 0}</p>
+        <p><strong>Open Tickets:</strong> ${ticketCount || 0}</p>
+      </div>
+      <div class="detail-actions">
+        <a href="/admin/departments" class="btn">&larr; Back</a>
+        ${base.isAdmin ? `
+          <a href="/admin/departments/${dept.id}/edit" class="btn btn-primary">Edit</a>
+          <form method="POST" action="/admin/departments/${dept.id}/delete" style="display:inline" onsubmit="return confirm('Delete this department?')">
+            <input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">
+            <button type="submit" class="btn btn-danger">Delete</button>
+          </form>
+        ` : ''}
+      </div>
+    </div>
+  `;
+  res.send(renderAdminPage(dept.name, content, base, 'departments'));
+}));
+
+// ══════════════════════════════════════════
+// Team Detail View (with member management)
+// ══════════════════════════════════════════
+
+router.get('/teams/:id', asyncHandler(async (req, res, next) => {
+  if (req.params.id === 'create') return next();
+  const base = await getAdminData(req);
+  const team = await db.queryOne(`
+    SELECT t.*, s.firstname, s.lastname
+    FROM ${db.table('team')} t
+    LEFT JOIN ${db.table('staff')} s ON t.lead_id = s.staff_id
+    WHERE t.team_id = ?
+  `, [req.params.id]);
+
+  if (!team) return res.send(renderAdminPage('Not Found', '<p>Team not found.</p>', base, 'teams'));
+
+  const members = await db.query(`
+    SELECT s.staff_id, s.firstname, s.lastname, s.email
+    FROM ${db.table('team_member')} tm
+    JOIN ${db.table('staff')} s ON tm.staff_id = s.staff_id
+    WHERE tm.team_id = ?
+  `, [req.params.id]);
+
+  const allStaff = base.isAdmin ? await db.query(`SELECT staff_id, firstname, lastname FROM ${db.table('staff')} WHERE isactive = 1 ORDER BY lastname`) : [];
+  const memberIds = new Set(members.map(m => m.staff_id));
+  const availableStaff = allStaff.filter(s => !memberIds.has(s.staff_id));
+  const csrfToken = req.csrfToken ? req.csrfToken() : '';
+
+  const content = `
+    <div class="detail-view">
+      <h2>${escapeHtml(team.name)}</h2>
+      <div class="detail-meta">
+        <p><strong>Lead:</strong> ${team.lead_id ? escapeHtml(`${team.firstname} ${team.lastname}`.trim()) : 'None'}</p>
+        <p><strong>Notes:</strong> ${escapeHtml(team.notes || 'None')}</p>
+        <p><strong>Members:</strong> ${members.length}</p>
+      </div>
+
+      <h3>Members</h3>
+      ${members.length > 0 ? `
+        <table class="data-table">
+          <thead><tr><th>Name</th><th>Email</th><th>Actions</th></tr></thead>
+          <tbody>
+            ${members.map(m => `
+              <tr>
+                <td>${escapeHtml(`${m.firstname} ${m.lastname}`.trim())}</td>
+                <td>${escapeHtml(m.email || '')}</td>
+                <td>
+                  ${base.isAdmin ? `
+                    <form method="POST" action="/admin/teams/${team.team_id}/members/${m.staff_id}/remove" style="display:inline">
+                      <input type="hidden" name="_csrf" value="${csrfToken}">
+                      <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+                    </form>
+                  ` : ''}
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      ` : '<p>No members.</p>'}
+
+      ${base.isAdmin && availableStaff.length > 0 ? `
+        <h3>Add Member</h3>
+        <form method="POST" action="/admin/teams/${team.team_id}/members" class="filter-form">
+          <input type="hidden" name="_csrf" value="${csrfToken}">
+          <select name="staff_id">${availableStaff.map(s => `<option value="${s.staff_id}">${escapeHtml(`${s.firstname} ${s.lastname}`.trim())}</option>`).join('')}</select>
+          <button type="submit" class="btn btn-primary">Add</button>
+        </form>
+      ` : ''}
+
+      <div class="detail-actions" style="margin-top:20px">
+        <a href="/admin/teams" class="btn">&larr; Back</a>
+        ${base.isAdmin ? `
+          <a href="/admin/teams/${team.team_id}/edit" class="btn btn-primary">Edit</a>
+          <form method="POST" action="/admin/teams/${team.team_id}/delete" style="display:inline" onsubmit="return confirm('Delete this team?')">
+            <input type="hidden" name="_csrf" value="${csrfToken}">
+            <button type="submit" class="btn btn-danger">Delete</button>
+          </form>
+        ` : ''}
+      </div>
+    </div>
+  `;
+  res.send(renderAdminPage(team.name, content, base, 'teams'));
+}));
+
+// ══════════════════════════════════════════
+// Organization Detail View
+// ══════════════════════════════════════════
+
+router.get('/organizations/:id', asyncHandler(async (req, res, next) => {
+  if (req.params.id === 'create') return next();
+  const base = await getAdminData(req);
+  const org = await db.queryOne(`SELECT * FROM ${db.table('organization')} WHERE id = ?`, [req.params.id]);
+
+  if (!org) return res.send(renderAdminPage('Not Found', '<p>Organization not found.</p>', base, 'organizations'));
+
+  const userCount = await db.queryValue(`SELECT COUNT(*) FROM ${db.table('user')} WHERE org_id = ?`, [req.params.id]);
+
+  const content = `
+    <div class="detail-view">
+      <h2>${escapeHtml(org.name)}</h2>
+      <div class="detail-meta">
+        <p><strong>Domain:</strong> ${escapeHtml(org.domain || 'None')}</p>
+        <p><strong>Status:</strong> ${org.status === 0 ? 'Active' : 'Inactive'}</p>
+        <p><strong>Users:</strong> ${userCount || 0}</p>
+        <p><strong>Created:</strong> ${formatDate(org.created)}</p>
+      </div>
+      <div class="detail-actions">
+        <a href="/admin/organizations" class="btn">&larr; Back</a>
+        ${base.isAdmin ? `
+          <a href="/admin/organizations/${org.id}/edit" class="btn btn-primary">Edit</a>
+          <form method="POST" action="/admin/organizations/${org.id}/delete" style="display:inline" onsubmit="return confirm('Delete this organization?')">
+            <input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">
+            <button type="submit" class="btn btn-danger">Delete</button>
+          </form>
+        ` : ''}
+      </div>
+    </div>
+  `;
+  res.send(renderAdminPage(org.name, content, base, 'organizations'));
+}));
+
+// ══════════════════════════════════════════
+// Staff CRUD Forms
+// ══════════════════════════════════════════
+
+router.get('/staff/create', requireAdmin, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const depts = await db.query(`SELECT id, name FROM ${db.table('department')} ORDER BY name`);
+  const roles = await db.query(`SELECT id, name FROM ${db.table('role')} ORDER BY name`);
+  const csrfToken = req.csrfToken ? req.csrfToken() : '';
+
+  const content = `
+    <form method="POST" action="/admin/staff">
+      <input type="hidden" name="_csrf" value="${csrfToken}">
+      <div class="form-group"><label>Username *</label><input type="text" name="username" required minlength="3" maxlength="32"></div>
+      <div class="form-group"><label>First Name *</label><input type="text" name="firstname" required></div>
+      <div class="form-group"><label>Last Name *</label><input type="text" name="lastname" required></div>
+      <div class="form-group"><label>Email *</label><input type="email" name="email" required></div>
+      <div class="form-group"><label>Password *</label><input type="password" name="password" required minlength="8"></div>
+      <div class="form-group"><label>Department *</label>
+        <select name="dept_id" required>${depts.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('')}</select>
+      </div>
+      <div class="form-group"><label>Role *</label>
+        <select name="role_id" required>${roles.map(r => `<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('')}</select>
+      </div>
+      <div class="form-group"><label>Phone</label><input type="text" name="phone"></div>
+      <div class="form-group"><label><input type="checkbox" name="isadmin" value="1"> Administrator</label></div>
+      <div class="form-group"><label><input type="checkbox" name="isactive" value="1" checked> Active</label></div>
+      <button type="submit" class="btn btn-primary">Create Staff</button>
+      <a href="/admin/staff" class="btn">Cancel</a>
+    </form>
+  `;
+  res.send(renderAdminPage('Create Staff', content, base, 'staff'));
+}));
+
+router.post('/staff', requireAdmin, asyncHandler(async (req, res) => {
+  const { username, firstname, lastname, email, password, dept_id, role_id, phone, isadmin, isactive } = req.body;
+
+  // Validate uniqueness
+  const existing = await db.queryOne(`SELECT staff_id FROM ${db.table('staff')} WHERE username = ?`, [username.trim()]);
+  if (existing) {
+    const base = await getAdminData(req);
+    return res.status(400).send(renderAdminPage('Error', `<p class="error">Username "${escapeHtml(username)}" already exists.</p><p><a href="/admin/staff/create" class="btn">Back</a></p>`, base, 'staff'));
+  }
+
+  const bcrypt = require('bcryptjs');
+  const hash = await bcrypt.hash(password, 10);
+  const now = new Date();
+  const result = await db.query(`
+    INSERT INTO ${db.table('staff')} (username, firstname, lastname, email, passwd, dept_id, role_id, phone, isadmin, isactive, created, updated)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [username.trim(), firstname.trim(), lastname.trim(), email.trim(), hash, dept_id, role_id, phone || null, isadmin ? 1 : 0, isactive ? 1 : 0, now, now]);
+  res.redirect(`/admin/staff/${result.insertId}`);
+}));
+
+router.get('/staff/:id/edit', requireAdmin, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const staff = await db.queryOne(`SELECT * FROM ${db.table('staff')} WHERE staff_id = ?`, [req.params.id]);
+  if (!staff) return res.send(renderAdminPage('Not Found', '<p>Staff not found.</p>', base, 'staff'));
+
+  const depts = await db.query(`SELECT id, name FROM ${db.table('department')} ORDER BY name`);
+  const roles = await db.query(`SELECT id, name FROM ${db.table('role')} ORDER BY name`);
+  const csrfToken = req.csrfToken ? req.csrfToken() : '';
+
+  const content = `
+    <form method="POST" action="/admin/staff/${staff.staff_id}">
+      <input type="hidden" name="_csrf" value="${csrfToken}">
+      <div class="form-group"><label>Username</label><input type="text" name="username" value="${escapeHtml(staff.username)}" required></div>
+      <div class="form-group"><label>First Name</label><input type="text" name="firstname" value="${escapeHtml(staff.firstname || '')}" required></div>
+      <div class="form-group"><label>Last Name</label><input type="text" name="lastname" value="${escapeHtml(staff.lastname || '')}" required></div>
+      <div class="form-group"><label>Email</label><input type="email" name="email" value="${escapeHtml(staff.email || '')}" required></div>
+      <div class="form-group"><label>New Password (leave blank to keep)</label><input type="password" name="password" minlength="8"></div>
+      <div class="form-group"><label>Department</label>
+        <select name="dept_id">${depts.map(d => `<option value="${d.id}" ${d.id === staff.dept_id ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('')}</select>
+      </div>
+      <div class="form-group"><label>Role</label>
+        <select name="role_id">${roles.map(r => `<option value="${r.id}" ${r.id === staff.role_id ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('')}</select>
+      </div>
+      <div class="form-group"><label>Phone</label><input type="text" name="phone" value="${escapeHtml(staff.phone || '')}"></div>
+      <div class="form-group"><label><input type="checkbox" name="isadmin" value="1" ${staff.isadmin ? 'checked' : ''}> Administrator</label></div>
+      <div class="form-group"><label><input type="checkbox" name="isactive" value="1" ${staff.isactive ? 'checked' : ''}> Active</label></div>
+      <button type="submit" class="btn btn-primary">Update Staff</button>
+      <a href="/admin/staff/${staff.staff_id}" class="btn">Cancel</a>
+    </form>
+  `;
+  res.send(renderAdminPage('Edit Staff', content, base, 'staff'));
+}));
+
+router.post('/staff/:id', requireAdmin, asyncHandler(async (req, res) => {
+  const { username, firstname, lastname, email, password, dept_id, role_id, phone, isadmin, isactive } = req.body;
+  const updates = ['username = ?', 'firstname = ?', 'lastname = ?', 'email = ?', 'dept_id = ?', 'role_id = ?', 'phone = ?', 'isadmin = ?', 'isactive = ?', 'updated = ?'];
+  const params = [username.trim(), firstname.trim(), lastname.trim(), email.trim(), dept_id, role_id, phone || null, isadmin ? 1 : 0, isactive ? 1 : 0, new Date()];
+
+  if (password && password.length >= 8) {
+    const bcrypt = require('bcryptjs');
+    const hash = await bcrypt.hash(password, 10);
+    updates.push('passwd = ?');
+    params.push(hash);
+  }
+
+  params.push(req.params.id);
+  await db.query(`UPDATE ${db.table('staff')} SET ${updates.join(', ')} WHERE staff_id = ?`, params);
+  res.redirect(`/admin/staff/${req.params.id}`);
+}));
+
+router.post('/staff/:id/delete', requireAdmin, asyncHandler(async (req, res) => {
+  const id = req.params.id;
+  const ticketCount = await db.queryValue(`SELECT COUNT(*) FROM ${db.table('ticket')} WHERE staff_id = ?`, [id]);
+  if (parseInt(ticketCount || 0, 10) > 0) {
+    const base = await getAdminData(req);
+    return res.status(400).send(renderAdminPage('Error', '<p class="error">Cannot delete: staff has assigned tickets.</p><p><a href="/admin/staff" class="btn">Back</a></p>', base, 'staff'));
+  }
+  await db.transaction(async (txQuery) => {
+    await txQuery(`DELETE FROM ${db.table('staff_dept_access')} WHERE staff_id = ?`, [id]);
+    await txQuery(`DELETE FROM ${db.table('team_member')} WHERE staff_id = ?`, [id]);
+    await txQuery(`DELETE FROM ${db.table('staff')} WHERE staff_id = ?`, [id]);
+  });
+  res.redirect('/admin/staff');
+}));
+
+// ══════════════════════════════════════════
+// Organization CRUD Forms
+// ══════════════════════════════════════════
+
+router.get('/organizations/create', requireAdmin, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const csrfToken = req.csrfToken ? req.csrfToken() : '';
+  const content = `
+    <form method="POST" action="/admin/organizations">
+      <input type="hidden" name="_csrf" value="${csrfToken}">
+      <div class="form-group"><label>Name *</label><input type="text" name="name" required maxlength="128"></div>
+      <div class="form-group"><label>Domain</label><input type="text" name="domain"></div>
+      <button type="submit" class="btn btn-primary">Create Organization</button>
+      <a href="/admin/organizations" class="btn">Cancel</a>
+    </form>
+  `;
+  res.send(renderAdminPage('Create Organization', content, base, 'organizations'));
+}));
+
+router.post('/organizations', requireAdmin, asyncHandler(async (req, res) => {
+  const { name, domain } = req.body;
+
+  // Validate name uniqueness
+  const existing = await db.queryOne(`SELECT id FROM ${db.table('organization')} WHERE name = ?`, [name.trim()]);
+  if (existing) {
+    const base = await getAdminData(req);
+    return res.status(400).send(renderAdminPage('Error', `<p class="error">Organization "${escapeHtml(name)}" already exists.</p><p><a href="/admin/organizations/create" class="btn">Back</a></p>`, base, 'organizations'));
+  }
+
+  const now = new Date();
+  const result = await db.query(`INSERT INTO ${db.table('organization')} (name, domain, status, created, updated) VALUES (?, ?, 0, ?, ?)`,
+    [name.trim(), domain || null, now, now]);
+  res.redirect(`/admin/organizations/${result.insertId}`);
+}));
+
+router.get('/organizations/:id/edit', requireAdmin, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const org = await db.queryOne(`SELECT * FROM ${db.table('organization')} WHERE id = ?`, [req.params.id]);
+  if (!org) return res.send(renderAdminPage('Not Found', '<p>Organization not found.</p>', base, 'organizations'));
+
+  const csrfToken = req.csrfToken ? req.csrfToken() : '';
+  const content = `
+    <form method="POST" action="/admin/organizations/${org.id}">
+      <input type="hidden" name="_csrf" value="${csrfToken}">
+      <div class="form-group"><label>Name</label><input type="text" name="name" value="${escapeHtml(org.name)}" required maxlength="128"></div>
+      <div class="form-group"><label>Domain</label><input type="text" name="domain" value="${escapeHtml(org.domain || '')}"></div>
+      <div class="form-group"><label>Status</label>
+        <select name="status"><option value="0" ${org.status === 0 ? 'selected' : ''}>Active</option><option value="1" ${org.status === 1 ? 'selected' : ''}>Inactive</option></select>
+      </div>
+      <button type="submit" class="btn btn-primary">Update Organization</button>
+      <a href="/admin/organizations/${org.id}" class="btn">Cancel</a>
+    </form>
+  `;
+  res.send(renderAdminPage('Edit Organization', content, base, 'organizations'));
+}));
+
+router.post('/organizations/:id', requireAdmin, asyncHandler(async (req, res) => {
+  const { name, domain, status } = req.body;
+  await db.query(`UPDATE ${db.table('organization')} SET name = ?, domain = ?, status = ?, updated = ? WHERE id = ?`,
+    [name.trim(), domain || null, parseInt(status, 10) || 0, new Date(), req.params.id]);
+  res.redirect(`/admin/organizations/${req.params.id}`);
+}));
+
+router.post('/organizations/:id/delete', requireAdmin, asyncHandler(async (req, res) => {
+  const userCount = await db.queryValue(`SELECT COUNT(*) FROM ${db.table('user')} WHERE org_id = ?`, [req.params.id]);
+  if (parseInt(userCount || 0, 10) > 0) {
+    const base = await getAdminData(req);
+    return res.status(400).send(renderAdminPage('Error', '<p class="error">Cannot delete: users are assigned to this organization.</p><p><a href="/admin/organizations" class="btn">Back</a></p>', base, 'organizations'));
+  }
+  await db.query(`DELETE FROM ${db.table('organization')} WHERE id = ?`, [req.params.id]);
+  res.redirect('/admin/organizations');
+}));
+
+// ══════════════════════════════════════════
+// Department CRUD Forms
+// ══════════════════════════════════════════
+
+router.get('/departments/create', requireAdmin, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const depts = await db.query(`SELECT id, name FROM ${db.table('department')} ORDER BY name`);
+  const staff = await db.query(`SELECT staff_id, firstname, lastname FROM ${db.table('staff')} WHERE isactive = 1 ORDER BY lastname`);
+  const slas = await db.query(`SELECT id, name FROM ${db.table('sla')} ORDER BY name`);
+  const csrfToken = req.csrfToken ? req.csrfToken() : '';
+
+  const content = `
+    <form method="POST" action="/admin/departments">
+      <input type="hidden" name="_csrf" value="${csrfToken}">
+      <div class="form-group"><label>Name *</label><input type="text" name="name" required></div>
+      <div class="form-group"><label>Parent Department</label>
+        <select name="pid"><option value="0">None (Top Level)</option>${depts.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('')}</select>
+      </div>
+      <div class="form-group"><label>Manager</label>
+        <select name="manager_id"><option value="0">None</option>${staff.map(s => `<option value="${s.staff_id}">${escapeHtml(`${s.firstname} ${s.lastname}`.trim())}</option>`).join('')}</select>
+      </div>
+      <div class="form-group"><label>SLA Plan</label>
+        <select name="sla_id"><option value="0">Default</option>${slas.map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('')}</select>
+      </div>
+      <div class="form-group"><label><input type="checkbox" name="ispublic" value="1" checked> Public</label></div>
+      <button type="submit" class="btn btn-primary">Create Department</button>
+      <a href="/admin/departments" class="btn">Cancel</a>
+    </form>
+  `;
+  res.send(renderAdminPage('Create Department', content, base, 'departments'));
+}));
+
+router.post('/departments', requireAdmin, asyncHandler(async (req, res) => {
+  const { name, pid, manager_id, sla_id, ispublic } = req.body;
+  let path = `/${name.trim()}`;
+  if (parseInt(pid, 10)) {
+    const parent = await db.queryOne(`SELECT path FROM ${db.table('department')} WHERE id = ?`, [pid]);
+    if (parent) path = `${parent.path}/${name.trim()}`;
+  }
+  const now = new Date();
+  const result = await db.query(`INSERT INTO ${db.table('department')} (pid, name, path, manager_id, sla_id, ispublic, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [parseInt(pid, 10) || 0, name.trim(), path, parseInt(manager_id, 10) || 0, parseInt(sla_id, 10) || 0, ispublic ? 1 : 0, now, now]);
+  res.redirect(`/admin/departments/${result.insertId}`);
+}));
+
+router.get('/departments/:id/edit', requireAdmin, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const dept = await db.queryOne(`SELECT * FROM ${db.table('department')} WHERE id = ?`, [req.params.id]);
+  if (!dept) return res.send(renderAdminPage('Not Found', '<p>Department not found.</p>', base, 'departments'));
+
+  const depts = await db.query(`SELECT id, name FROM ${db.table('department')} WHERE id != ? ORDER BY name`, [req.params.id]);
+  const staff = await db.query(`SELECT staff_id, firstname, lastname FROM ${db.table('staff')} WHERE isactive = 1 ORDER BY lastname`);
+  const slas = await db.query(`SELECT id, name FROM ${db.table('sla')} ORDER BY name`);
+  const csrfToken = req.csrfToken ? req.csrfToken() : '';
+
+  const content = `
+    <form method="POST" action="/admin/departments/${dept.id}">
+      <input type="hidden" name="_csrf" value="${csrfToken}">
+      <div class="form-group"><label>Name</label><input type="text" name="name" value="${escapeHtml(dept.name)}" required></div>
+      <div class="form-group"><label>Parent Department</label>
+        <select name="pid"><option value="0">None (Top Level)</option>${depts.map(d => `<option value="${d.id}" ${d.id === dept.pid ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('')}</select>
+      </div>
+      <div class="form-group"><label>Manager</label>
+        <select name="manager_id"><option value="0">None</option>${staff.map(s => `<option value="${s.staff_id}" ${s.staff_id === dept.manager_id ? 'selected' : ''}>${escapeHtml(`${s.firstname} ${s.lastname}`.trim())}</option>`).join('')}</select>
+      </div>
+      <div class="form-group"><label>SLA Plan</label>
+        <select name="sla_id"><option value="0">Default</option>${slas.map(s => `<option value="${s.id}" ${s.id === dept.sla_id ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}</select>
+      </div>
+      <div class="form-group"><label><input type="checkbox" name="ispublic" value="1" ${dept.ispublic ? 'checked' : ''}> Public</label></div>
+      <button type="submit" class="btn btn-primary">Update Department</button>
+      <a href="/admin/departments/${dept.id}" class="btn">Cancel</a>
+    </form>
+  `;
+  res.send(renderAdminPage('Edit Department', content, base, 'departments'));
+}));
+
+router.post('/departments/:id', requireAdmin, asyncHandler(async (req, res) => {
+  const { name, pid, manager_id, sla_id, ispublic } = req.body;
+  const deptId = req.params.id;
+  const newPid = parseInt(pid, 10) || 0;
+  let newPath = `/${name.trim()}`;
+  if (newPid) {
+    const parent = await db.queryOne(`SELECT path FROM ${db.table('department')} WHERE id = ?`, [newPid]);
+    if (parent) newPath = `${parent.path}/${name.trim()}`;
+  }
+
+  // Get old path for descendant recalculation
+  const oldDept = await db.queryOne(`SELECT path FROM ${db.table('department')} WHERE id = ?`, [deptId]);
+
+  await db.transaction(async (txQuery) => {
+    await txQuery(`UPDATE ${db.table('department')} SET name = ?, pid = ?, path = ?, manager_id = ?, sla_id = ?, ispublic = ?, updated = ? WHERE id = ?`,
+      [name.trim(), newPid, newPath, parseInt(manager_id, 10) || 0, parseInt(sla_id, 10) || 0, ispublic ? 1 : 0, new Date(), deptId]);
+
+    // Recalculate descendant paths if path changed
+    if (oldDept && newPath !== oldDept.path) {
+      const descendants = await txQuery(`SELECT id, path FROM ${db.table('department')} WHERE path LIKE ?`, [`${oldDept.path}/%`]);
+      for (const desc of descendants) {
+        const updatedPath = desc.path.replace(oldDept.path, newPath);
+        await txQuery(`UPDATE ${db.table('department')} SET path = ? WHERE id = ?`, [updatedPath, desc.id]);
+      }
+    }
+  });
+
+  res.redirect(`/admin/departments/${deptId}`);
+}));
+
+router.post('/departments/:id/delete', requireAdmin, asyncHandler(async (req, res) => {
+  const id = req.params.id;
+  const checks = [
+    { sql: `SELECT COUNT(*) FROM ${db.table('department')} WHERE pid = ?`, msg: 'has child departments' },
+    { sql: `SELECT COUNT(*) FROM ${db.table('staff')} WHERE dept_id = ?`, msg: 'has staff members' },
+    { sql: `SELECT COUNT(*) FROM ${db.table('ticket')} WHERE dept_id = ?`, msg: 'has tickets' }
+  ];
+  for (const check of checks) {
+    const count = await db.queryValue(check.sql, [id]);
+    if (parseInt(count || 0, 10) > 0) {
+      const base = await getAdminData(req);
+      return res.status(400).send(renderAdminPage('Error', `<p class="error">Cannot delete: ${check.msg}.</p><p><a href="/admin/departments" class="btn">Back</a></p>`, base, 'departments'));
+    }
+  }
+  await db.query(`DELETE FROM ${db.table('department')} WHERE id = ?`, [id]);
+  res.redirect('/admin/departments');
+}));
+
+// ══════════════════════════════════════════
+// Team CRUD Forms
+// ══════════════════════════════════════════
+
+router.get('/teams/create', requireAdmin, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const staff = await db.query(`SELECT staff_id, firstname, lastname FROM ${db.table('staff')} WHERE isactive = 1 ORDER BY lastname`);
+  const csrfToken = req.csrfToken ? req.csrfToken() : '';
+
+  const content = `
+    <form method="POST" action="/admin/teams">
+      <input type="hidden" name="_csrf" value="${csrfToken}">
+      <div class="form-group"><label>Name *</label><input type="text" name="name" required></div>
+      <div class="form-group"><label>Team Lead</label>
+        <select name="lead_id"><option value="0">None</option>${staff.map(s => `<option value="${s.staff_id}">${escapeHtml(`${s.firstname} ${s.lastname}`.trim())}</option>`).join('')}</select>
+      </div>
+      <div class="form-group"><label>Notes</label><textarea name="notes" rows="3"></textarea></div>
+      <button type="submit" class="btn btn-primary">Create Team</button>
+      <a href="/admin/teams" class="btn">Cancel</a>
+    </form>
+  `;
+  res.send(renderAdminPage('Create Team', content, base, 'teams'));
+}));
+
+router.post('/teams', requireAdmin, asyncHandler(async (req, res) => {
+  const { name, lead_id, notes } = req.body;
+  const now = new Date();
+  const result = await db.query(`INSERT INTO ${db.table('team')} (name, lead_id, flags, notes, created, updated) VALUES (?, ?, 0, ?, ?, ?)`,
+    [name.trim(), parseInt(lead_id, 10) || 0, notes || null, now, now]);
+  res.redirect(`/admin/teams/${result.insertId}`);
+}));
+
+router.get('/teams/:id/edit', requireAdmin, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const team = await db.queryOne(`SELECT * FROM ${db.table('team')} WHERE team_id = ?`, [req.params.id]);
+  if (!team) return res.send(renderAdminPage('Not Found', '<p>Team not found.</p>', base, 'teams'));
+
+  const staff = await db.query(`SELECT staff_id, firstname, lastname FROM ${db.table('staff')} WHERE isactive = 1 ORDER BY lastname`);
+  const csrfToken = req.csrfToken ? req.csrfToken() : '';
+
+  const content = `
+    <form method="POST" action="/admin/teams/${team.team_id}">
+      <input type="hidden" name="_csrf" value="${csrfToken}">
+      <div class="form-group"><label>Name</label><input type="text" name="name" value="${escapeHtml(team.name)}" required></div>
+      <div class="form-group"><label>Team Lead</label>
+        <select name="lead_id"><option value="0">None</option>${staff.map(s => `<option value="${s.staff_id}" ${s.staff_id === team.lead_id ? 'selected' : ''}>${escapeHtml(`${s.firstname} ${s.lastname}`.trim())}</option>`).join('')}</select>
+      </div>
+      <div class="form-group"><label>Notes</label><textarea name="notes" rows="3">${escapeHtml(team.notes || '')}</textarea></div>
+      <button type="submit" class="btn btn-primary">Update Team</button>
+      <a href="/admin/teams/${team.team_id}" class="btn">Cancel</a>
+    </form>
+  `;
+  res.send(renderAdminPage('Edit Team', content, base, 'teams'));
+}));
+
+router.post('/teams/:id', requireAdmin, asyncHandler(async (req, res) => {
+  const { name, lead_id, notes } = req.body;
+  await db.query(`UPDATE ${db.table('team')} SET name = ?, lead_id = ?, notes = ?, updated = ? WHERE team_id = ?`,
+    [name.trim(), parseInt(lead_id, 10) || 0, notes || null, new Date(), req.params.id]);
+  res.redirect(`/admin/teams/${req.params.id}`);
+}));
+
+router.post('/teams/:id/delete', requireAdmin, asyncHandler(async (req, res) => {
+  const id = req.params.id;
+  const ticketCount = await db.queryValue(`SELECT COUNT(*) FROM ${db.table('ticket')} WHERE team_id = ?`, [id]);
+  if (parseInt(ticketCount || 0, 10) > 0) {
+    const base = await getAdminData(req);
+    return res.status(400).send(renderAdminPage('Error', '<p class="error">Cannot delete: team has tickets.</p><p><a href="/admin/teams" class="btn">Back</a></p>', base, 'teams'));
+  }
+  await db.transaction(async (txQuery) => {
+    await txQuery(`DELETE FROM ${db.table('team_member')} WHERE team_id = ?`, [id]);
+    await txQuery(`DELETE FROM ${db.table('team')} WHERE team_id = ?`, [id]);
+  });
+  res.redirect('/admin/teams');
+}));
+
+// Team member management
+router.post('/teams/:id/members', requireAdmin, asyncHandler(async (req, res) => {
+  const { staff_id } = req.body;
+  const existing = await db.queryOne(`SELECT staff_id FROM ${db.table('team_member')} WHERE team_id = ? AND staff_id = ?`, [req.params.id, staff_id]);
+  if (!existing) {
+    await db.query(`INSERT INTO ${db.table('team_member')} (team_id, staff_id, flags) VALUES (?, ?, 0)`, [req.params.id, staff_id]);
+  }
+  res.redirect(`/admin/teams/${req.params.id}`);
+}));
+
+router.post('/teams/:id/members/:staffId/remove', requireAdmin, asyncHandler(async (req, res) => {
+  await db.query(`DELETE FROM ${db.table('team_member')} WHERE team_id = ? AND staff_id = ?`, [req.params.id, req.params.staffId]);
+  res.redirect(`/admin/teams/${req.params.id}`);
 }));
 
 module.exports = router;

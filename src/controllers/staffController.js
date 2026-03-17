@@ -42,7 +42,7 @@ const list = async (req, res) => {
   }
 
   // Get total count
-  const countSql = sql.replace(/SELECT .* FROM/, 'SELECT COUNT(*) as count FROM');
+  const countSql = sql.replace(/SELECT .*? FROM/s, 'SELECT COUNT(*) as count FROM');
   const countResult = await db.queryOne(countSql, params);
   const total = parseInt(countResult?.count || 0, 10);
 
@@ -287,10 +287,230 @@ const getTeams = async (req, res) => {
   });
 };
 
+/**
+ * Create staff member
+ */
+const create = async (req, res) => {
+  const {
+    username, firstname, lastname, email, password,
+    dept_id, role_id, phone, isadmin, isactive,
+    signature, timezone, departments
+  } = req.body;
+
+  if (!username || username.length < 3 || username.length > 32) {
+    throw ApiError.badRequest('Username is required (3-32 characters)');
+  }
+  if (!firstname) throw ApiError.badRequest('First name is required');
+  if (!lastname) throw ApiError.badRequest('Last name is required');
+  if (!email) throw ApiError.badRequest('Email is required');
+  if (!password || password.length < 8) throw ApiError.badRequest('Password is required (min 8 characters)');
+  if (!dept_id) throw ApiError.badRequest('Department is required');
+  if (!role_id) throw ApiError.badRequest('Role is required');
+
+  // Check username uniqueness
+  const existing = await db.queryOne(`
+    SELECT staff_id FROM ${db.table('staff')} WHERE username = ?
+  `, [username]);
+
+  if (existing) {
+    throw ApiError.conflict('A staff member with this username already exists');
+  }
+
+  const bcrypt = require('bcryptjs');
+  const hashedPassword = await bcrypt.hash(password, 10);
+  const now = new Date();
+
+  await db.transaction(async (txQuery) => {
+    const result = await txQuery(`
+      INSERT INTO ${db.table('staff')} (
+        username, firstname, lastname, email, passwd,
+        dept_id, role_id, phone, isadmin, isactive,
+        signature, timezone, created, updated
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      username.trim(),
+      firstname.trim(),
+      lastname.trim(),
+      email.trim(),
+      hashedPassword,
+      dept_id,
+      role_id,
+      phone || null,
+      isadmin ? 1 : 0,
+      isactive !== undefined ? (isactive ? 1 : 0) : 1,
+      signature || null,
+      timezone || null,
+      now,
+      now
+    ]);
+
+    const staffId = result.insertId;
+
+    // Add extended department access
+    if (departments && Array.isArray(departments)) {
+      for (const dept of departments) {
+        await txQuery(`
+          INSERT INTO ${db.table('staff_dept_access')} (staff_id, dept_id, role_id, flags)
+          VALUES (?, ?, ?, 0)
+        `, [staffId, dept.dept_id, dept.role_id || role_id]);
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      data: {
+        staff_id: staffId,
+        username: username.trim(),
+        firstname: firstname.trim(),
+        lastname: lastname.trim(),
+        email: email.trim(),
+        dept_id,
+        role_id,
+        created: now
+      }
+    });
+  });
+};
+
+/**
+ * Update staff member
+ */
+const update = async (req, res) => {
+  const { id } = req.params;
+  const {
+    username, firstname, lastname, email, password,
+    dept_id, role_id, phone, isadmin, isactive,
+    signature, timezone, departments
+  } = req.body;
+
+  const staff = await db.queryOne(`
+    SELECT staff_id FROM ${db.table('staff')} WHERE staff_id = ?
+  `, [id]);
+
+  if (!staff) {
+    throw ApiError.notFound('Staff member not found');
+  }
+
+  if (username !== undefined) {
+    if (username.length < 3 || username.length > 32) {
+      throw ApiError.badRequest('Username must be 3-32 characters');
+    }
+    const existing = await db.queryOne(`
+      SELECT staff_id FROM ${db.table('staff')} WHERE username = ? AND staff_id != ?
+    `, [username, id]);
+    if (existing) {
+      throw ApiError.conflict('A staff member with this username already exists');
+    }
+  }
+
+  const updates = [];
+  const params = [];
+
+  if (username !== undefined) { updates.push('username = ?'); params.push(username.trim()); }
+  if (firstname !== undefined) { updates.push('firstname = ?'); params.push(firstname.trim()); }
+  if (lastname !== undefined) { updates.push('lastname = ?'); params.push(lastname.trim()); }
+  if (email !== undefined) { updates.push('email = ?'); params.push(email.trim()); }
+  if (dept_id !== undefined) { updates.push('dept_id = ?'); params.push(dept_id); }
+  if (role_id !== undefined) { updates.push('role_id = ?'); params.push(role_id); }
+  if (phone !== undefined) { updates.push('phone = ?'); params.push(phone); }
+  if (isadmin !== undefined) { updates.push('isadmin = ?'); params.push(isadmin ? 1 : 0); }
+  if (isactive !== undefined) { updates.push('isactive = ?'); params.push(isactive ? 1 : 0); }
+  if (signature !== undefined) { updates.push('signature = ?'); params.push(signature); }
+  if (timezone !== undefined) { updates.push('timezone = ?'); params.push(timezone); }
+
+  if (password !== undefined) {
+    if (password.length < 8) {
+      throw ApiError.badRequest('Password must be at least 8 characters');
+    }
+    const bcrypt = require('bcryptjs');
+    const hashedPassword = await bcrypt.hash(password, 10);
+    updates.push('passwd = ?');
+    params.push(hashedPassword);
+  }
+
+  if (updates.length === 0 && !departments) {
+    throw ApiError.badRequest('No fields to update');
+  }
+
+  await db.transaction(async (txQuery) => {
+    if (updates.length > 0) {
+      updates.push('updated = ?');
+      params.push(new Date());
+      params.push(id);
+      await txQuery(`
+        UPDATE ${db.table('staff')} SET ${updates.join(', ')} WHERE staff_id = ?
+      `, params);
+    }
+
+    // Replace department access if provided
+    if (departments && Array.isArray(departments)) {
+      await txQuery(`DELETE FROM ${db.table('staff_dept_access')} WHERE staff_id = ?`, [id]);
+      for (const dept of departments) {
+        await txQuery(`
+          INSERT INTO ${db.table('staff_dept_access')} (staff_id, dept_id, role_id, flags)
+          VALUES (?, ?, ?, 0)
+        `, [id, dept.dept_id, dept.role_id || 0]);
+      }
+    }
+  });
+
+  res.json({ success: true, message: 'Staff member updated' });
+};
+
+/**
+ * Delete staff member
+ */
+const remove = async (req, res) => {
+  const { id } = req.params;
+
+  const staff = await db.queryOne(`
+    SELECT staff_id FROM ${db.table('staff')} WHERE staff_id = ?
+  `, [id]);
+
+  if (!staff) {
+    throw ApiError.notFound('Staff member not found');
+  }
+
+  // Check ticket assignments
+  const ticketCount = await db.queryValue(`
+    SELECT COUNT(*) FROM ${db.table('ticket')} WHERE staff_id = ?
+  `, [id]);
+  if (parseInt(ticketCount || 0, 10) > 0) {
+    throw ApiError.conflict('Cannot delete staff: tickets are assigned to this staff member');
+  }
+
+  // Check department manager
+  const deptManagerCount = await db.queryValue(`
+    SELECT COUNT(*) FROM ${db.table('department')} WHERE manager_id = ?
+  `, [id]);
+  if (parseInt(deptManagerCount || 0, 10) > 0) {
+    throw ApiError.conflict('Cannot delete staff: staff member is a department manager');
+  }
+
+  // Check team lead
+  const teamLeadCount = await db.queryValue(`
+    SELECT COUNT(*) FROM ${db.table('team')} WHERE lead_id = ?
+  `, [id]);
+  if (parseInt(teamLeadCount || 0, 10) > 0) {
+    throw ApiError.conflict('Cannot delete staff: staff member is a team lead');
+  }
+
+  await db.transaction(async (txQuery) => {
+    await txQuery(`DELETE FROM ${db.table('staff_dept_access')} WHERE staff_id = ?`, [id]);
+    await txQuery(`DELETE FROM ${db.table('team_member')} WHERE staff_id = ?`, [id]);
+    await txQuery(`DELETE FROM ${db.table('staff')} WHERE staff_id = ?`, [id]);
+  });
+
+  res.json({ success: true, message: 'Staff member deleted' });
+};
+
 module.exports = {
   list,
   get,
   getTickets,
   getDepartments,
-  getTeams
+  getTeams,
+  create,
+  update,
+  remove
 };
