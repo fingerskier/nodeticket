@@ -20,12 +20,12 @@
 - [x] Merge duplicate tickets
 
 ## P2 — User & Staff Management
-- [ ] Create/edit/delete users (admin)
-- [ ] Create/edit/delete staff (admin)
-- [ ] User profile editing (self-service)
-- [ ] Organization CRUD
-- [ ] Department/team CRUD
-- [ ] Role & permission management
+- [x] Create/edit/delete users (admin)
+- [x] Create/edit/delete staff (admin)
+- [x] User profile editing (self-service)
+- [x] Organization CRUD
+- [x] Department/team CRUD
+- [x] Role & permission management
 
 ## P3 — Admin & Configuration
 - [ ] System settings management
