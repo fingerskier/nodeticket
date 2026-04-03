@@ -5,6 +5,7 @@
  */
 
 const config = require('../config');
+const { ValidationError, NotFoundError, ConflictError, NodeticketError } = require('../sdk/errors');
 
 /**
  * Custom error class for API errors
@@ -31,6 +32,10 @@ class ApiError extends Error {
 
   static notFound(message = 'Resource not found') {
     return new ApiError(404, message);
+  }
+
+  static conflict(message = 'Resource conflict') {
+    return new ApiError(409, message);
   }
 
   static internal(message = 'Internal server error') {
@@ -76,6 +81,17 @@ const notFoundHandler = (req, res, next) => {
  * Global error handler
  */
 const errorHandler = (err, req, res, next) => {
+  // Map SDK errors to ApiError before processing
+  if (err instanceof ValidationError) {
+    err = new ApiError(400, err.message, err.errors);
+  } else if (err instanceof NotFoundError) {
+    err = new ApiError(404, err.message);
+  } else if (err instanceof ConflictError) {
+    err = new ApiError(409, err.message);
+  } else if (err instanceof NodeticketError) {
+    err = new ApiError(500, err.message);
+  }
+
   // Log error in development
   if (config.env === 'development') {
     console.error('Error:', err);

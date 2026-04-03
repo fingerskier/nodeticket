@@ -1,8 +1,8 @@
 /**
- * SLA Controller
+ * SLA Controller — thin HTTP adapter using SDK data layer
  */
 
-const db = require('../lib/db');
+const { getSdk } = require('../lib/sdk');
 const { ApiError } = require('../middleware/errorHandler');
 
 // SLA Flags
@@ -10,33 +10,31 @@ const FLAGS = {
   ACTIVE: 1,
   ESCALATE: 2,
   NOALERTS: 4,
-  TRANSIENT: 8
+  TRANSIENT: 8,
 };
+
+/**
+ * Format an SLA row for response
+ */
+const formatSla = (s) => ({
+  id: s.id,
+  name: s.name,
+  grace_period: s.grace_period,
+  flags: s.flags,
+  isActive: !!(s.flags & FLAGS.ACTIVE),
+  escalate: !!(s.flags & FLAGS.ESCALATE),
+  noAlerts: !!(s.flags & FLAGS.NOALERTS),
+  isTransient: !!(s.flags & FLAGS.TRANSIENT),
+  created: s.created,
+  updated: s.updated,
+});
 
 /**
  * List SLA plans
  */
 const list = async (req, res) => {
-  const slas = await db.query(`
-    SELECT * FROM ${db.table('sla')}
-    ORDER BY name
-  `);
-
-  res.json({
-    success: true,
-    data: slas.map(s => ({
-      id: s.id,
-      name: s.name,
-      grace_period: s.grace_period,
-      flags: s.flags,
-      isActive: !!(s.flags & FLAGS.ACTIVE),
-      escalate: !!(s.flags & FLAGS.ESCALATE),
-      noAlerts: !!(s.flags & FLAGS.NOALERTS),
-      isTransient: !!(s.flags & FLAGS.TRANSIENT),
-      created: s.created,
-      updated: s.updated
-    }))
-  });
+  const slas = await getSdk().data.sla.find({ orderBy: 'name ASC' });
+  res.json({ success: true, data: slas.map(formatSla) });
 };
 
 /**
@@ -44,54 +42,44 @@ const list = async (req, res) => {
  */
 const get = async (req, res) => {
   const { id } = req.params;
+  const sdk = getSdk();
 
-  const sla = await db.queryOne(`
-    SELECT * FROM ${db.table('sla')} WHERE id = ?
-  `, [id]);
+  const sla = await sdk.data.sla.findById(id);
+  if (!sla) throw ApiError.notFound('SLA plan not found');
 
-  if (!sla) {
-    throw ApiError.notFound('SLA plan not found');
-  }
+  // Get usage statistics via connection
+  const conn = sdk.connection;
+  const ticketCount = parseInt(
+    await conn.queryValue(`
+      SELECT COUNT(*) FROM ${conn.table('ticket')} t
+      JOIN ${conn.table('ticket_status')} ts ON t.status_id = ts.id
+      WHERE t.sla_id = ? AND ts.state = 'open'
+    `, [id]) || 0, 10,
+  );
 
-  // Get usage statistics
-  const ticketCount = await db.queryValue(`
-    SELECT COUNT(*) FROM ${db.table('ticket')} t
-    JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id
-    WHERE t.sla_id = ? AND ts.state = 'open'
-  `, [id]);
+  const deptCount = parseInt(
+    await conn.queryValue(`SELECT COUNT(*) FROM ${conn.table('department')} WHERE sla_id = ?`, [id]) || 0, 10,
+  );
 
-  const deptCount = await db.queryValue(`
-    SELECT COUNT(*) FROM ${db.table('department')} WHERE sla_id = ?
-  `, [id]);
-
-  const topicCount = await db.queryValue(`
-    SELECT COUNT(*) FROM ${db.table('help_topic')} WHERE sla_id = ?
-  `, [id]);
+  const topicCount = parseInt(
+    await conn.queryValue(`SELECT COUNT(*) FROM ${conn.table('help_topic')} WHERE sla_id = ?`, [id]) || 0, 10,
+  );
 
   res.json({
     success: true,
     data: {
-      id: sla.id,
-      name: sla.name,
-      grace_period: sla.grace_period,
-      flags: sla.flags,
-      isActive: !!(sla.flags & FLAGS.ACTIVE),
-      escalate: !!(sla.flags & FLAGS.ESCALATE),
-      noAlerts: !!(sla.flags & FLAGS.NOALERTS),
-      isTransient: !!(sla.flags & FLAGS.TRANSIENT),
+      ...formatSla(sla),
       notes: sla.notes,
       usage: {
-        openTickets: parseInt(ticketCount || 0, 10),
-        departments: parseInt(deptCount || 0, 10),
-        helpTopics: parseInt(topicCount || 0, 10)
+        openTickets: ticketCount,
+        departments: deptCount,
+        helpTopics: topicCount,
       },
-      created: sla.created,
-      updated: sla.updated
-    }
+    },
   });
 };
 
 module.exports = {
   list,
-  get
+  get,
 };

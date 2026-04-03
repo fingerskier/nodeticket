@@ -1,9 +1,12 @@
 /**
  * MCP Admin Tools - CRUD for orgs, depts, teams, roles + team member management
+ *
+ * Delegates to SDK services for organizations, departments, teams.
+ * Uses SDK data layer directly for roles (no service layer exists).
  */
 
 const { z } = require('zod');
-const db = require('../../lib/db');
+const { getSdk } = require('../../lib/sdk');
 
 const registerAdminTools = (server, userAuth) => {
 
@@ -15,7 +18,7 @@ const registerAdminTools = (server, userAuth) => {
     return null;
   };
 
-  // ── Roles ──
+  // ── Roles (via data layer — no service exists) ──
 
   server.tool(
     'list_roles',
@@ -24,7 +27,8 @@ const registerAdminTools = (server, userAuth) => {
     async () => {
       const check = requireAdmin(); if (check) return check;
       try {
-        const roles = await db.query(`SELECT * FROM ${db.table('role')} ORDER BY name`);
+        const sdk = getSdk();
+        const roles = await sdk.data.roles.find({ orderBy: 'name ASC' });
         return { content: [{ type: 'text', text: JSON.stringify(roles.map(r => ({
           id: r.id, name: r.name, permissions: r.permissions ? JSON.parse(r.permissions) : {}, flags: r.flags
         })), null, 2) }] };
@@ -39,12 +43,19 @@ const registerAdminTools = (server, userAuth) => {
     async (params) => {
       const check = requireAdmin(); if (check) return check;
       try {
-        const existing = await db.queryOne(`SELECT id FROM ${db.table('role')} WHERE name = ?`, [params.name]);
-        if (existing) return { content: [{ type: 'text', text: 'Role name already exists' }], isError: true };
+        const sdk = getSdk();
+        const existing = await sdk.data.roles.find({ where: { name: params.name } });
+        if (existing.length > 0) return { content: [{ type: 'text', text: 'Role name already exists' }], isError: true };
         const now = new Date();
-        const result = await db.query(`INSERT INTO ${db.table('role')} (name, permissions, flags, notes, created, updated) VALUES (?, ?, ?, ?, ?, ?)`,
-          [params.name, params.permissions ? JSON.stringify(params.permissions) : null, params.flags || 0, params.notes || null, now, now]);
-        return { content: [{ type: 'text', text: JSON.stringify({ id: result.insertId, name: params.name, created: now }, null, 2) }] };
+        const result = await sdk.data.roles.create({
+          name: params.name,
+          permissions: params.permissions ? JSON.stringify(params.permissions) : null,
+          flags: params.flags || 0,
+          notes: params.notes || null,
+          created: now,
+          updated: now,
+        });
+        return { content: [{ type: 'text', text: JSON.stringify({ id: result.id, name: params.name, created: now }, null, 2) }] };
       } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
     }
   );
@@ -56,16 +67,17 @@ const registerAdminTools = (server, userAuth) => {
     async (params) => {
       const check = requireAdmin(); if (check) return check;
       try {
-        const role = await db.queryOne(`SELECT id FROM ${db.table('role')} WHERE id = ?`, [params.role_id]);
+        const sdk = getSdk();
+        const role = await sdk.data.roles.findById(params.role_id);
         if (!role) return { content: [{ type: 'text', text: 'Role not found' }], isError: true };
-        const updates = []; const sqlParams = [];
-        if (params.name !== undefined) { updates.push('name = ?'); sqlParams.push(params.name); }
-        if (params.permissions !== undefined) { updates.push('permissions = ?'); sqlParams.push(JSON.stringify(params.permissions)); }
-        if (params.flags !== undefined) { updates.push('flags = ?'); sqlParams.push(params.flags); }
-        if (params.notes !== undefined) { updates.push('notes = ?'); sqlParams.push(params.notes); }
-        if (updates.length === 0) return { content: [{ type: 'text', text: 'No updates' }], isError: true };
-        updates.push('updated = ?'); sqlParams.push(new Date()); sqlParams.push(params.role_id);
-        await db.query(`UPDATE ${db.table('role')} SET ${updates.join(', ')} WHERE id = ?`, sqlParams);
+        const updates = {};
+        if (params.name !== undefined) updates.name = params.name;
+        if (params.permissions !== undefined) updates.permissions = JSON.stringify(params.permissions);
+        if (params.flags !== undefined) updates.flags = params.flags;
+        if (params.notes !== undefined) updates.notes = params.notes;
+        if (Object.keys(updates).length === 0) return { content: [{ type: 'text', text: 'No updates' }], isError: true };
+        updates.updated = new Date();
+        await sdk.data.roles.update(params.role_id, updates);
         return { content: [{ type: 'text', text: JSON.stringify({ role_id: params.role_id, updated: true }) }] };
       } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
     }
@@ -78,9 +90,10 @@ const registerAdminTools = (server, userAuth) => {
     async (params) => {
       const check = requireAdmin(); if (check) return check;
       try {
-        const staffCount = await db.queryValue(`SELECT COUNT(*) FROM ${db.table('staff')} WHERE role_id = ?`, [params.role_id]);
-        if (parseInt(staffCount || 0, 10) > 0) return { content: [{ type: 'text', text: 'Cannot delete: role has staff' }], isError: true };
-        await db.query(`DELETE FROM ${db.table('role')} WHERE id = ?`, [params.role_id]);
+        const sdk = getSdk();
+        const staffCount = await sdk.data.staff.count({ role_id: params.role_id });
+        if (staffCount > 0) return { content: [{ type: 'text', text: 'Cannot delete: role has staff' }], isError: true };
+        await sdk.data.roles.remove(params.role_id);
         return { content: [{ type: 'text', text: JSON.stringify({ role_id: params.role_id, deleted: true }) }] };
       } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
     }
@@ -95,13 +108,18 @@ const registerAdminTools = (server, userAuth) => {
     async (params) => {
       const check = requireAdmin(); if (check) return check;
       try {
-        const existing = await db.queryOne(`SELECT id FROM ${db.table('organization')} WHERE name = ?`, [params.name]);
-        if (existing) return { content: [{ type: 'text', text: 'Organization name exists' }], isError: true };
-        const now = new Date();
-        const result = await db.query(`INSERT INTO ${db.table('organization')} (name, domain, status, manager, created, updated) VALUES (?, ?, ?, ?, ?, ?)`,
-          [params.name, params.domain || null, params.status || 0, params.manager || null, now, now]);
-        return { content: [{ type: 'text', text: JSON.stringify({ id: result.insertId, name: params.name }, null, 2) }] };
-      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+        const sdk = getSdk();
+        const result = await sdk.organizations.create({
+          name: params.name,
+          domain: params.domain,
+          status: params.status,
+          manager: params.manager,
+        });
+        return { content: [{ type: 'text', text: JSON.stringify({ id: result.id, name: result.name }, null, 2) }] };
+      } catch (err) {
+        if (err.code === 'CONFLICT') return { content: [{ type: 'text', text: 'Organization name exists' }], isError: true };
+        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      }
     }
   );
 
@@ -112,18 +130,19 @@ const registerAdminTools = (server, userAuth) => {
     async (params) => {
       const check = requireAdmin(); if (check) return check;
       try {
-        const org = await db.queryOne(`SELECT id FROM ${db.table('organization')} WHERE id = ?`, [params.org_id]);
-        if (!org) return { content: [{ type: 'text', text: 'Organization not found' }], isError: true };
-        const updates = []; const sqlParams = [];
-        if (params.name !== undefined) { updates.push('name = ?'); sqlParams.push(params.name); }
-        if (params.domain !== undefined) { updates.push('domain = ?'); sqlParams.push(params.domain); }
-        if (params.status !== undefined) { updates.push('status = ?'); sqlParams.push(params.status); }
-        if (params.manager !== undefined) { updates.push('manager = ?'); sqlParams.push(params.manager); }
-        if (updates.length === 0) return { content: [{ type: 'text', text: 'No updates' }], isError: true };
-        updates.push('updated = ?'); sqlParams.push(new Date()); sqlParams.push(params.org_id);
-        await db.query(`UPDATE ${db.table('organization')} SET ${updates.join(', ')} WHERE id = ?`, sqlParams);
+        const sdk = getSdk();
+        const changes = {};
+        if (params.name !== undefined) changes.name = params.name;
+        if (params.domain !== undefined) changes.domain = params.domain;
+        if (params.status !== undefined) changes.status = params.status;
+        if (params.manager !== undefined) changes.manager = params.manager;
+        if (Object.keys(changes).length === 0) return { content: [{ type: 'text', text: 'No updates' }], isError: true };
+        await sdk.organizations.update(params.org_id, changes);
         return { content: [{ type: 'text', text: JSON.stringify({ org_id: params.org_id, updated: true }) }] };
-      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+      } catch (err) {
+        if (err.code === 'NOT_FOUND') return { content: [{ type: 'text', text: 'Organization not found' }], isError: true };
+        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      }
     }
   );
 
@@ -134,11 +153,13 @@ const registerAdminTools = (server, userAuth) => {
     async (params) => {
       const check = requireAdmin(); if (check) return check;
       try {
-        const userCount = await db.queryValue(`SELECT COUNT(*) FROM ${db.table('user')} WHERE org_id = ?`, [params.org_id]);
-        if (parseInt(userCount || 0, 10) > 0) return { content: [{ type: 'text', text: 'Cannot delete: org has users' }], isError: true };
-        await db.query(`DELETE FROM ${db.table('organization')} WHERE id = ?`, [params.org_id]);
+        const sdk = getSdk();
+        await sdk.organizations.remove(params.org_id);
         return { content: [{ type: 'text', text: JSON.stringify({ org_id: params.org_id, deleted: true }) }] };
-      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+      } catch (err) {
+        if (err.code === 'CONFLICT') return { content: [{ type: 'text', text: 'Cannot delete: org has users' }], isError: true };
+        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      }
     }
   );
 
@@ -151,16 +172,18 @@ const registerAdminTools = (server, userAuth) => {
     async (params) => {
       const check = requireAdmin(); if (check) return check;
       try {
-        let path = `/${params.name}`;
-        if (params.pid) {
-          const parent = await db.queryOne(`SELECT path FROM ${db.table('department')} WHERE id = ?`, [params.pid]);
-          if (parent) path = `${parent.path}/${params.name}`;
-        }
-        const now = new Date();
-        const result = await db.query(`INSERT INTO ${db.table('department')} (pid, name, path, manager_id, sla_id, ispublic, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [params.pid || 0, params.name, path, params.manager_id || 0, params.sla_id || 0, params.ispublic !== false ? 1 : 0, now, now]);
-        return { content: [{ type: 'text', text: JSON.stringify({ id: result.insertId, name: params.name, path }, null, 2) }] };
-      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+        const sdk = getSdk();
+        const result = await sdk.departments.create({
+          name: params.name,
+          pid: params.pid,
+          manager_id: params.manager_id,
+          sla_id: params.sla_id,
+          ispublic: params.ispublic,
+        });
+        return { content: [{ type: 'text', text: JSON.stringify({ id: result.id, name: result.name, path: result.path }, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      }
     }
   );
 
@@ -171,19 +194,20 @@ const registerAdminTools = (server, userAuth) => {
     async (params) => {
       const check = requireAdmin(); if (check) return check;
       try {
-        const dept = await db.queryOne(`SELECT id FROM ${db.table('department')} WHERE id = ?`, [params.dept_id]);
-        if (!dept) return { content: [{ type: 'text', text: 'Department not found' }], isError: true };
-        const updates = []; const sqlParams = [];
-        if (params.name !== undefined) { updates.push('name = ?'); sqlParams.push(params.name); }
-        if (params.pid !== undefined) { updates.push('pid = ?'); sqlParams.push(params.pid); }
-        if (params.manager_id !== undefined) { updates.push('manager_id = ?'); sqlParams.push(params.manager_id); }
-        if (params.sla_id !== undefined) { updates.push('sla_id = ?'); sqlParams.push(params.sla_id); }
-        if (params.ispublic !== undefined) { updates.push('ispublic = ?'); sqlParams.push(params.ispublic ? 1 : 0); }
-        if (updates.length === 0) return { content: [{ type: 'text', text: 'No updates' }], isError: true };
-        updates.push('updated = ?'); sqlParams.push(new Date()); sqlParams.push(params.dept_id);
-        await db.query(`UPDATE ${db.table('department')} SET ${updates.join(', ')} WHERE id = ?`, sqlParams);
+        const sdk = getSdk();
+        const changes = {};
+        if (params.name !== undefined) changes.name = params.name;
+        if (params.pid !== undefined) changes.pid = params.pid;
+        if (params.manager_id !== undefined) changes.manager_id = params.manager_id;
+        if (params.sla_id !== undefined) changes.sla_id = params.sla_id;
+        if (params.ispublic !== undefined) changes.ispublic = params.ispublic;
+        if (Object.keys(changes).length === 0) return { content: [{ type: 'text', text: 'No updates' }], isError: true };
+        await sdk.departments.update(params.dept_id, changes);
         return { content: [{ type: 'text', text: JSON.stringify({ dept_id: params.dept_id, updated: true }) }] };
-      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+      } catch (err) {
+        if (err.code === 'NOT_FOUND') return { content: [{ type: 'text', text: 'Department not found' }], isError: true };
+        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      }
     }
   );
 
@@ -194,15 +218,13 @@ const registerAdminTools = (server, userAuth) => {
     async (params) => {
       const check = requireAdmin(); if (check) return check;
       try {
-        const children = await db.queryValue(`SELECT COUNT(*) FROM ${db.table('department')} WHERE pid = ?`, [params.dept_id]);
-        if (parseInt(children || 0, 10) > 0) return { content: [{ type: 'text', text: 'Cannot delete: has child departments' }], isError: true };
-        const staff = await db.queryValue(`SELECT COUNT(*) FROM ${db.table('staff')} WHERE dept_id = ?`, [params.dept_id]);
-        if (parseInt(staff || 0, 10) > 0) return { content: [{ type: 'text', text: 'Cannot delete: has staff' }], isError: true };
-        const tickets = await db.queryValue(`SELECT COUNT(*) FROM ${db.table('ticket')} WHERE dept_id = ?`, [params.dept_id]);
-        if (parseInt(tickets || 0, 10) > 0) return { content: [{ type: 'text', text: 'Cannot delete: has tickets' }], isError: true };
-        await db.query(`DELETE FROM ${db.table('department')} WHERE id = ?`, [params.dept_id]);
+        const sdk = getSdk();
+        await sdk.departments.remove(params.dept_id);
         return { content: [{ type: 'text', text: JSON.stringify({ dept_id: params.dept_id, deleted: true }) }] };
-      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+      } catch (err) {
+        if (err.code === 'CONFLICT') return { content: [{ type: 'text', text: err.message }], isError: true };
+        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      }
     }
   );
 
@@ -215,11 +237,16 @@ const registerAdminTools = (server, userAuth) => {
     async (params) => {
       const check = requireAdmin(); if (check) return check;
       try {
-        const now = new Date();
-        const result = await db.query(`INSERT INTO ${db.table('team')} (name, lead_id, flags, notes, created, updated) VALUES (?, ?, 0, ?, ?, ?)`,
-          [params.name, params.lead_id || 0, params.notes || null, now, now]);
-        return { content: [{ type: 'text', text: JSON.stringify({ team_id: result.insertId, name: params.name }, null, 2) }] };
-      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+        const sdk = getSdk();
+        const result = await sdk.teams.create({
+          name: params.name,
+          lead_id: params.lead_id,
+          notes: params.notes,
+        });
+        return { content: [{ type: 'text', text: JSON.stringify({ team_id: result.team_id, name: result.name }, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      }
     }
   );
 
@@ -230,17 +257,18 @@ const registerAdminTools = (server, userAuth) => {
     async (params) => {
       const check = requireAdmin(); if (check) return check;
       try {
-        const team = await db.queryOne(`SELECT team_id FROM ${db.table('team')} WHERE team_id = ?`, [params.team_id]);
-        if (!team) return { content: [{ type: 'text', text: 'Team not found' }], isError: true };
-        const updates = []; const sqlParams = [];
-        if (params.name !== undefined) { updates.push('name = ?'); sqlParams.push(params.name); }
-        if (params.lead_id !== undefined) { updates.push('lead_id = ?'); sqlParams.push(params.lead_id); }
-        if (params.notes !== undefined) { updates.push('notes = ?'); sqlParams.push(params.notes); }
-        if (updates.length === 0) return { content: [{ type: 'text', text: 'No updates' }], isError: true };
-        updates.push('updated = ?'); sqlParams.push(new Date()); sqlParams.push(params.team_id);
-        await db.query(`UPDATE ${db.table('team')} SET ${updates.join(', ')} WHERE team_id = ?`, sqlParams);
+        const sdk = getSdk();
+        const changes = {};
+        if (params.name !== undefined) changes.name = params.name;
+        if (params.lead_id !== undefined) changes.lead_id = params.lead_id;
+        if (params.notes !== undefined) changes.notes = params.notes;
+        if (Object.keys(changes).length === 0) return { content: [{ type: 'text', text: 'No updates' }], isError: true };
+        await sdk.teams.update(params.team_id, changes);
         return { content: [{ type: 'text', text: JSON.stringify({ team_id: params.team_id, updated: true }) }] };
-      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+      } catch (err) {
+        if (err.code === 'NOT_FOUND') return { content: [{ type: 'text', text: 'Team not found' }], isError: true };
+        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      }
     }
   );
 
@@ -251,14 +279,13 @@ const registerAdminTools = (server, userAuth) => {
     async (params) => {
       const check = requireAdmin(); if (check) return check;
       try {
-        const tickets = await db.queryValue(`SELECT COUNT(*) FROM ${db.table('ticket')} WHERE team_id = ?`, [params.team_id]);
-        if (parseInt(tickets || 0, 10) > 0) return { content: [{ type: 'text', text: 'Cannot delete: has tickets' }], isError: true };
-        await db.transaction(async (txQuery) => {
-          await txQuery(`DELETE FROM ${db.table('team_member')} WHERE team_id = ?`, [params.team_id]);
-          await txQuery(`DELETE FROM ${db.table('team')} WHERE team_id = ?`, [params.team_id]);
-        });
+        const sdk = getSdk();
+        await sdk.teams.remove(params.team_id);
         return { content: [{ type: 'text', text: JSON.stringify({ team_id: params.team_id, deleted: true }) }] };
-      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+      } catch (err) {
+        if (err.code === 'CONFLICT') return { content: [{ type: 'text', text: err.message }], isError: true };
+        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      }
     }
   );
 
@@ -271,11 +298,13 @@ const registerAdminTools = (server, userAuth) => {
     async (params) => {
       const check = requireAdmin(); if (check) return check;
       try {
-        const existing = await db.queryOne(`SELECT staff_id FROM ${db.table('team_member')} WHERE team_id = ? AND staff_id = ?`, [params.team_id, params.staff_id]);
-        if (existing) return { content: [{ type: 'text', text: 'Already a member' }], isError: true };
-        await db.query(`INSERT INTO ${db.table('team_member')} (team_id, staff_id, flags) VALUES (?, ?, 0)`, [params.team_id, params.staff_id]);
+        const sdk = getSdk();
+        await sdk.teams.addMember(params.team_id, params.staff_id);
         return { content: [{ type: 'text', text: JSON.stringify({ team_id: params.team_id, staff_id: params.staff_id, added: true }) }] };
-      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+      } catch (err) {
+        if (err.code === 'CONFLICT') return { content: [{ type: 'text', text: 'Already a member' }], isError: true };
+        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      }
     }
   );
 
@@ -286,9 +315,12 @@ const registerAdminTools = (server, userAuth) => {
     async (params) => {
       const check = requireAdmin(); if (check) return check;
       try {
-        await db.query(`DELETE FROM ${db.table('team_member')} WHERE team_id = ? AND staff_id = ?`, [params.team_id, params.staff_id]);
+        const sdk = getSdk();
+        await sdk.teams.removeMember(params.team_id, params.staff_id);
         return { content: [{ type: 'text', text: JSON.stringify({ team_id: params.team_id, staff_id: params.staff_id, removed: true }) }] };
-      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      }
     }
   );
 };

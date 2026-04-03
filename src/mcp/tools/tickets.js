@@ -2,47 +2,11 @@
  * MCP Ticket Tools
  *
  * Provides ticket-related tools for MCP clients.
- * SQL patterns adapted from src/controllers/ticketController.js.
+ * Delegates to SDK ticket service for all business logic.
  */
 
 const { z } = require('zod');
-const db = require('../../lib/db');
-
-/**
- * Log a thread event (MCP helper)
- */
-const logEvent = async (threadId, eventName, staffId, username, data) => {
-  const event = await db.queryOne(
-    `SELECT id FROM ${db.table('event')} WHERE name = ?`, [eventName]
-  );
-  if (!event) return;
-  await db.query(`
-    INSERT INTO ${db.table('thread_event')}
-    (thread_id, event_id, staff_id, username, data, timestamp)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `, [threadId, event.id, staffId || 0, username || '', JSON.stringify(data), new Date()]);
-};
-
-/**
- * Format ticket for MCP response
- */
-const formatTicket = (t) => ({
-  ticket_id: t.ticket_id,
-  number: t.number,
-  subject: t.subject,
-  user_id: t.user_id,
-  user_name: t.user_name,
-  status: { id: t.status_id, name: t.status_name, state: t.status_state },
-  department: { id: t.dept_id, name: t.dept_name },
-  topic: t.topic_name ? { topic_id: t.topic_id, topic: t.topic_name } : null,
-  priority: { priority_id: t.priority_id, priority: t.priority_name, priority_color: t.priority_color },
-  staff_id: t.staff_id,
-  staff_name: t.staff_name,
-  isoverdue: !!t.isoverdue,
-  isanswered: !!t.isanswered,
-  created: t.created,
-  updated: t.updated
-});
+const { getSdk } = require('../../lib/sdk');
 
 /**
  * Register all ticket tools on an McpServer instance.
@@ -63,62 +27,29 @@ const registerTicketTools = (server, userAuth) => {
     },
     async (params) => {
       try {
-        const page = Math.max(1, params.page || 1);
-        const limit = Math.min(100, Math.max(1, params.limit || 25));
-        const offset = (page - 1) * limit;
-
-        let sql = `
-          SELECT t.*,
-                 ts.name as status_name, ts.state as status_state,
-                 d.name as dept_name,
-                 ht.topic as topic_name,
-                 tp.priority_id, tp.priority as priority_name, tp.priority_color,
-                 u.name as user_name,
-                 CONCAT(s.firstname, ' ', s.lastname) as staff_name,
-                 tc.subject
-          FROM ${db.table('ticket')} t
-          LEFT JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id
-          LEFT JOIN ${db.table('department')} d ON t.dept_id = d.id
-          LEFT JOIN ${db.table('help_topic')} ht ON t.topic_id = ht.topic_id
-          LEFT JOIN ${db.table('ticket_priority')} tp ON ht.priority_id = tp.priority_id
-          LEFT JOIN ${db.table('user')} u ON t.user_id = u.id
-          LEFT JOIN ${db.table('staff')} s ON t.staff_id = s.staff_id
-          LEFT JOIN ${db.table('ticket__cdata')} tc ON t.ticket_id = tc.ticket_id
-          WHERE 1=1
-        `;
-        const sqlParams = [];
-
-        if (params.status) { sql += ` AND ts.state = ?`; sqlParams.push(params.status); }
-        if (params.dept_id) { sql += ` AND t.dept_id = ?`; sqlParams.push(params.dept_id); }
-        if (params.staff_id) { sql += ` AND t.staff_id = ?`; sqlParams.push(params.staff_id); }
-        if (params.search) {
-          sql += ` AND (t.number LIKE ? OR tc.subject LIKE ?)`;
-          const term = `%${params.search}%`;
-          sqlParams.push(term, term);
-        }
+        const sdk = getSdk();
+        const filters = {
+          status: params.status,
+          dept_id: params.dept_id,
+          staff_id: params.staff_id,
+          search: params.search,
+          page: params.page,
+          limit: params.limit,
+        };
 
         // User access restriction
         if (userAuth?.type === 'user') {
-          sql += ` AND t.user_id = ?`;
-          sqlParams.push(userAuth.id);
+          filters.user_id = userAuth.id;
         }
 
-        // Count
-        const countSql = sql.replace(/SELECT .*? FROM/s, 'SELECT COUNT(*) as count FROM');
-        const countResult = await db.queryOne(countSql, sqlParams);
-        const total = parseInt(countResult?.count || 0, 10);
-
-        sql += ` ORDER BY t.created DESC LIMIT ? OFFSET ?`;
-        sqlParams.push(limit, offset);
-
-        const tickets = await db.query(sql, sqlParams);
+        const result = await sdk.tickets.list(filters);
 
         return {
           content: [{
             type: 'text',
             text: JSON.stringify({
-              tickets: tickets.map(formatTicket),
-              pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
+              tickets: result.data,
+              pagination: result.pagination
             }, null, 2)
           }]
         };
@@ -139,9 +70,13 @@ const registerTicketTools = (server, userAuth) => {
     },
     async (params) => {
       try {
+        const sdk = getSdk();
+        const conn = sdk.connection;
         const limit = Math.min(50, Math.max(1, params.limit || 20));
         const term = `%${params.query}%`;
 
+        // Full-text search across subjects and thread entry bodies
+        // requires direct SQL since SDK list() only searches number/subject
         let sql = `
           SELECT DISTINCT t.ticket_id, t.number, t.created, t.updated,
                  ts.name as status_name, ts.state as status_state,
@@ -150,14 +85,14 @@ const registerTicketTools = (server, userAuth) => {
                  d.name as dept_name,
                  u.name as user_name,
                  CONCAT(s.firstname, ' ', s.lastname) as staff_name
-          FROM ${db.table('ticket')} t
-          LEFT JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id
-          LEFT JOIN ${db.table('ticket__cdata')} tc ON t.ticket_id = tc.ticket_id
-          LEFT JOIN ${db.table('department')} d ON t.dept_id = d.id
-          LEFT JOIN ${db.table('user')} u ON t.user_id = u.id
-          LEFT JOIN ${db.table('staff')} s ON t.staff_id = s.staff_id
-          LEFT JOIN ${db.table('thread')} th ON th.object_id = t.ticket_id AND th.object_type = 'T'
-          LEFT JOIN ${db.table('thread_entry')} te ON te.thread_id = th.id
+          FROM ${conn.table('ticket')} t
+          LEFT JOIN ${conn.table('ticket_status')} ts ON t.status_id = ts.id
+          LEFT JOIN ${conn.table('ticket__cdata')} tc ON t.ticket_id = tc.ticket_id
+          LEFT JOIN ${conn.table('department')} d ON t.dept_id = d.id
+          LEFT JOIN ${conn.table('user')} u ON t.user_id = u.id
+          LEFT JOIN ${conn.table('staff')} s ON t.staff_id = s.staff_id
+          LEFT JOIN ${conn.table('thread')} th ON th.object_id = t.ticket_id AND th.object_type = 'T'
+          LEFT JOIN ${conn.table('thread_entry')} te ON te.thread_id = th.id
           WHERE (tc.subject LIKE ? OR te.body LIKE ?)
         `;
         const sqlParams = [term, term];
@@ -172,7 +107,7 @@ const registerTicketTools = (server, userAuth) => {
         sql += ` ORDER BY t.updated DESC LIMIT ?`;
         sqlParams.push(limit);
 
-        const tickets = await db.query(sql, sqlParams);
+        const tickets = await conn.query(sql, sqlParams);
 
         return {
           content: [{
@@ -206,36 +141,8 @@ const registerTicketTools = (server, userAuth) => {
     },
     async (params) => {
       try {
-        const ticket = await db.queryOne(`
-          SELECT t.*,
-                 ts.name as status_name, ts.state as status_state,
-                 d.name as dept_name,
-                 ht.topic as topic_name,
-                 tp.priority_id, tp.priority as priority_name, tp.priority_color,
-                 u.name as user_name, ue.address as user_email,
-                 CONCAT(s.firstname, ' ', s.lastname) as staff_name, s.email as staff_email,
-                 tm.name as team_name,
-                 sla.name as sla_name,
-                 tc.subject,
-                 th.id as thread_id
-          FROM ${db.table('ticket')} t
-          LEFT JOIN ${db.table('ticket_status')} ts ON t.status_id = ts.id
-          LEFT JOIN ${db.table('department')} d ON t.dept_id = d.id
-          LEFT JOIN ${db.table('help_topic')} ht ON t.topic_id = ht.topic_id
-          LEFT JOIN ${db.table('ticket_priority')} tp ON ht.priority_id = tp.priority_id
-          LEFT JOIN ${db.table('user')} u ON t.user_id = u.id
-          LEFT JOIN ${db.table('user_email')} ue ON u.default_email_id = ue.id
-          LEFT JOIN ${db.table('staff')} s ON t.staff_id = s.staff_id
-          LEFT JOIN ${db.table('team')} tm ON t.team_id = tm.team_id
-          LEFT JOIN ${db.table('sla')} sla ON t.sla_id = sla.id
-          LEFT JOIN ${db.table('ticket__cdata')} tc ON t.ticket_id = tc.ticket_id
-          LEFT JOIN ${db.table('thread')} th ON th.object_id = t.ticket_id AND th.object_type = 'T'
-          WHERE t.ticket_id = ?
-        `, [params.ticket_id]);
-
-        if (!ticket) {
-          return { content: [{ type: 'text', text: 'Ticket not found' }], isError: true };
-        }
+        const sdk = getSdk();
+        const ticket = await sdk.tickets.get(params.ticket_id);
 
         // Access control
         if (userAuth?.type === 'user' && ticket.user_id !== userAuth.id) {
@@ -246,37 +153,26 @@ const registerTicketTools = (server, userAuth) => {
           ticket_id: ticket.ticket_id,
           number: ticket.number,
           subject: ticket.subject,
-          status: { id: ticket.status_id, name: ticket.status_name, state: ticket.status_state },
-          department: { id: ticket.dept_id, name: ticket.dept_name },
-          topic: ticket.topic_name,
-          priority: { priority_id: ticket.priority_id, name: ticket.priority_name, color: ticket.priority_color },
-          user: { id: ticket.user_id, name: ticket.user_name, email: ticket.user_email },
-          staff: ticket.staff_id ? { id: ticket.staff_id, name: ticket.staff_name, email: ticket.staff_email } : null,
-          team: ticket.team_id ? { id: ticket.team_id, name: ticket.team_name } : null,
-          sla: ticket.sla_id ? { name: ticket.sla_name } : null,
-          isoverdue: !!ticket.isoverdue,
-          isanswered: !!ticket.isanswered,
+          status: ticket.status,
+          department: ticket.department,
+          topic: ticket.topic,
+          priority: ticket.priority,
+          user: ticket.user,
+          staff: ticket.staff,
+          team: ticket.team,
+          sla: ticket.sla,
+          isoverdue: ticket.isoverdue,
+          isanswered: ticket.isanswered,
           created: ticket.created,
           updated: ticket.updated
         };
 
-        if (params.include_thread && ticket.thread_id) {
-          const entries = await db.query(`
-            SELECT te.*,
-                   s.firstname, s.lastname, s.email as staff_email,
-                   u.name as user_name, ue.address as user_email
-            FROM ${db.table('thread_entry')} te
-            LEFT JOIN ${db.table('staff')} s ON te.staff_id = s.staff_id
-            LEFT JOIN ${db.table('user')} u ON te.user_id = u.id
-            LEFT JOIN ${db.table('user_email')} ue ON u.default_email_id = ue.id
-            WHERE te.thread_id = ?
-            ORDER BY te.created ASC
-          `, [ticket.thread_id]);
-
-          result.thread = entries.map(e => ({
+        if (params.include_thread && ticket.thread?.id) {
+          const threadResult = await sdk.tickets.getThread(params.ticket_id, { limit: 100 });
+          result.thread = threadResult.data.map(e => ({
             id: e.id,
             type: e.type,
-            poster: e.poster || (e.staff_id ? `${e.firstname || ''} ${e.lastname || ''}`.trim() : e.user_name),
+            poster: e.poster,
             body: e.body,
             created: e.created
           }));
@@ -286,6 +182,9 @@ const registerTicketTools = (server, userAuth) => {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
         };
       } catch (err) {
+        if (err.code === 'NOT_FOUND') {
+          return { content: [{ type: 'text', text: 'Ticket not found' }], isError: true };
+        }
         return { content: [{ type: 'text', text: `Error reading ticket: ${err.message}` }], isError: true };
       }
     }
@@ -306,70 +205,19 @@ const registerTicketTools = (server, userAuth) => {
       }
 
       try {
-        const topic = await db.queryOne(`
-          SELECT ht.*, d.id as dept_id, d.name as dept_name
-          FROM ${db.table('help_topic')} ht
-          LEFT JOIN ${db.table('department')} d ON ht.dept_id = d.id
-          WHERE ht.topic_id = ? AND ht.isactive = 1 AND ht.ispublic = 1
-        `, [params.topic_id]);
-
-        if (!topic) {
-          return { content: [{ type: 'text', text: 'Invalid help topic' }], isError: true };
-        }
-
-        const defaultStatus = await db.queryOne(`
-          SELECT id FROM ${db.table('ticket_status')}
-          WHERE state = 'open' AND mode = 1
-          ORDER BY sort ASC LIMIT 1
-        `);
-
-        if (!defaultStatus) {
-          return { content: [{ type: 'text', text: 'Unable to find default ticket status' }], isError: true };
-        }
-
-        // Generate ticket number
-        const timestamp = Date.now().toString(36).toUpperCase();
-        const random = Math.random().toString(36).substring(2, 6).toUpperCase();
-        const ticketNumber = `${timestamp}${random}`.substring(0, 11);
-
-        const now = new Date();
-
-        const ticketResult = await db.query(`
-          INSERT INTO ${db.table('ticket')} (
-            number, user_id, dept_id, topic_id, status_id, source,
-            isoverdue, isanswered, duedate, est_duedate, created, updated
-          ) VALUES (?, ?, ?, ?, ?, 'MCP', 0, 0, NULL, NULL, ?, ?)
-        `, [ticketNumber, userAuth.id, topic.dept_id, params.topic_id, defaultStatus.id, now, now]);
-
-        const ticketId = ticketResult.insertId;
-
-        await db.query(`
-          INSERT INTO ${db.table('ticket__cdata')} (ticket_id, subject) VALUES (?, ?)
-        `, [ticketId, params.subject.trim().substring(0, 255)]);
-
-        const threadResult = await db.query(`
-          INSERT INTO ${db.table('thread')} (object_id, object_type, lastmessage, created) VALUES (?, 'T', ?, ?)
-        `, [ticketId, now, now]);
-
-        const threadId = threadResult.insertId;
-
-        await db.query(`
-          INSERT INTO ${db.table('thread_entry')} (
-            thread_id, user_id, type, poster, source, body, format, created
-          ) VALUES (?, ?, 'M', ?, 'MCP', ?, 'text', ?)
-        `, [threadId, userAuth.id, userAuth.name || 'User', params.message.trim(), now]);
+        const sdk = getSdk();
+        const result = await sdk.tickets.create({
+          userId: userAuth.id,
+          topicId: params.topic_id,
+          subject: params.subject,
+          body: params.message,
+          source: 'MCP',
+        });
 
         return {
           content: [{
             type: 'text',
-            text: JSON.stringify({
-              ticket_id: ticketId,
-              number: ticketNumber,
-              subject: params.subject.trim(),
-              status: 'open',
-              department: topic.dept_name,
-              created: now
-            }, null, 2)
+            text: JSON.stringify(result, null, 2)
           }]
         };
       } catch (err) {
@@ -395,72 +243,29 @@ const registerTicketTools = (server, userAuth) => {
       }
 
       try {
-        const ticket = await db.queryOne(
-          `SELECT t.ticket_id, t.status_id, th.id as thread_id
-           FROM ${db.table('ticket')} t
-           LEFT JOIN ${db.table('thread')} th ON th.object_id = t.ticket_id AND th.object_type = 'T'
-           WHERE t.ticket_id = ?`,
-          [params.ticket_id]
-        );
+        const sdk = getSdk();
+        const changes = {};
+        if (params.status_id !== undefined) changes.status_id = params.status_id;
+        if (params.staff_id !== undefined) changes.staff_id = params.staff_id;
+        if (params.dept_id !== undefined) changes.dept_id = params.dept_id;
+        if (params.team_id !== undefined) changes.team_id = params.team_id;
 
-        if (!ticket) {
-          return { content: [{ type: 'text', text: 'Ticket not found' }], isError: true };
-        }
-
-        const updates = [];
-        const sqlParams = [];
-        const staffId = userAuth?.id || 0;
-        const username = userAuth?.name || '';
-
-        if (params.status_id !== undefined) {
-          updates.push('status_id = ?'); sqlParams.push(params.status_id);
-          // Check if closing or reopening
-          const newStatus = await db.queryOne(
-            `SELECT state FROM ${db.table('ticket_status')} WHERE id = ?`, [params.status_id]
-          );
-          if (newStatus?.state === 'closed') {
-            updates.push('closed = ?'); sqlParams.push(new Date());
-            if (ticket.thread_id) await logEvent(ticket.thread_id, 'closed', staffId, username, { status_id: params.status_id });
-          } else {
-            const oldStatus = await db.queryOne(
-              `SELECT state FROM ${db.table('ticket_status')} WHERE id = ?`, [ticket.status_id]
-            );
-            if (oldStatus?.state === 'closed') {
-              updates.push('closed = ?'); sqlParams.push(null);
-              if (ticket.thread_id) await logEvent(ticket.thread_id, 'reopened', staffId, username, { status_id: params.status_id });
-            }
-          }
-        }
-        if (params.staff_id !== undefined) {
-          updates.push('staff_id = ?'); sqlParams.push(params.staff_id);
-          if (ticket.thread_id) await logEvent(ticket.thread_id, 'assigned', staffId, username, { staff_id: params.staff_id });
-        }
-        if (params.dept_id !== undefined) {
-          updates.push('dept_id = ?'); sqlParams.push(params.dept_id);
-          if (ticket.thread_id) await logEvent(ticket.thread_id, 'transferred', staffId, username, { dept_id: params.dept_id });
-        }
-        if (params.team_id !== undefined) {
-          updates.push('team_id = ?'); sqlParams.push(params.team_id);
-          if (ticket.thread_id) await logEvent(ticket.thread_id, 'assigned', staffId, username, { team_id: params.team_id });
-        }
-
-        if (updates.length === 0) {
+        if (Object.keys(changes).length === 0) {
           return { content: [{ type: 'text', text: 'No updates provided' }], isError: true };
         }
 
-        updates.push('updated = ?');
-        sqlParams.push(new Date());
-        sqlParams.push(params.ticket_id);
-
-        await db.query(
-          `UPDATE ${db.table('ticket')} SET ${updates.join(', ')} WHERE ticket_id = ?`,
-          sqlParams
-        );
+        const result = await sdk.tickets.update(params.ticket_id, changes, {
+          staffId: userAuth?.id || 0,
+          username: userAuth?.name || '',
+        });
 
         return {
-          content: [{ type: 'text', text: JSON.stringify({ ticket_id: params.ticket_id, updated: true }) }]
+          content: [{ type: 'text', text: JSON.stringify({ ticket_id: result.ticket_id, updated: true }) }]
         };
       } catch (err) {
+        if (err.code === 'NOT_FOUND') {
+          return { content: [{ type: 'text', text: 'Ticket not found' }], isError: true };
+        }
         return { content: [{ type: 'text', text: `Error updating ticket: ${err.message}` }], isError: true };
       }
     }
@@ -477,55 +282,35 @@ const registerTicketTools = (server, userAuth) => {
     },
     async (params) => {
       try {
-        const thread = await db.queryOne(`
-          SELECT th.id FROM ${db.table('thread')} th
-          JOIN ${db.table('ticket')} t ON th.object_id = t.ticket_id AND th.object_type = 'T'
-          WHERE t.ticket_id = ?
-        `, [params.ticket_id]);
-
-        if (!thread) {
-          return { content: [{ type: 'text', text: 'Ticket not found' }], isError: true };
-        }
+        const sdk = getSdk();
 
         // Access control for users
         if (userAuth?.type === 'user') {
-          const ticket = await db.queryOne(
-            `SELECT user_id FROM ${db.table('ticket')} WHERE ticket_id = ?`, [params.ticket_id]
-          );
-          if (ticket?.user_id !== userAuth.id) {
+          const ticket = await sdk.tickets.get(params.ticket_id);
+          if (ticket.user_id !== userAuth.id) {
             return { content: [{ type: 'text', text: 'Access denied' }], isError: true };
           }
         }
 
         const isStaff = userAuth?.type === 'staff' || userAuth?.type === 'apikey';
-        const now = new Date();
-        const entryType = isStaff ? 'R' : 'M';
-        const poster = userAuth?.name || (isStaff ? 'Staff' : 'User');
-        const staffId = isStaff ? (userAuth?.id || 0) : 0;
-        const userId = !isStaff ? (userAuth?.id || 0) : 0;
-
-        const result = await db.query(`
-          INSERT INTO ${db.table('thread_entry')}
-          (thread_id, staff_id, user_id, type, poster, source, body, format, created)
-          VALUES (?, ?, ?, ?, ?, 'MCP', ?, ?, ?)
-        `, [thread.id, staffId, userId, entryType, poster, params.message.trim(), params.format || 'text', now]);
-
-        if (isStaff) {
-          await db.query(`UPDATE ${db.table('thread')} SET lastresponse = ? WHERE id = ?`, [now, thread.id]);
-          await db.query(`UPDATE ${db.table('ticket')} SET isanswered = 1, updated = ? WHERE ticket_id = ?`, [now, params.ticket_id]);
-        } else {
-          await db.query(`UPDATE ${db.table('thread')} SET lastmessage = ? WHERE id = ?`, [now, thread.id]);
-          await db.query(`UPDATE ${db.table('ticket')} SET updated = ? WHERE ticket_id = ?`, [now, params.ticket_id]);
-        }
-
-        await logEvent(thread.id, 'message', staffId, poster, { type: entryType });
+        const result = await sdk.tickets.reply(params.ticket_id, {
+          staffId: isStaff ? (userAuth?.id || 0) : null,
+          userId: !isStaff ? (userAuth?.id || 0) : null,
+          body: params.message,
+          format: params.format || 'text',
+          poster: userAuth?.name || (isStaff ? 'Staff' : 'User'),
+          source: 'MCP',
+        });
 
         return {
           content: [{ type: 'text', text: JSON.stringify({
-            entry_id: result.insertId, thread_id: thread.id, type: entryType, poster, created: now
+            entry_id: result.id, thread_id: result.thread_id, type: result.type, poster: result.poster, created: result.created
           }, null, 2) }]
         };
       } catch (err) {
+        if (err.code === 'NOT_FOUND') {
+          return { content: [{ type: 'text', text: 'Ticket not found' }], isError: true };
+        }
         return { content: [{ type: 'text', text: `Error replying to ticket: ${err.message}` }], isError: true };
       }
     }
@@ -546,35 +331,23 @@ const registerTicketTools = (server, userAuth) => {
       }
 
       try {
-        const thread = await db.queryOne(`
-          SELECT th.id FROM ${db.table('thread')} th
-          JOIN ${db.table('ticket')} t ON th.object_id = t.ticket_id AND th.object_type = 'T'
-          WHERE t.ticket_id = ?
-        `, [params.ticket_id]);
-
-        if (!thread) {
-          return { content: [{ type: 'text', text: 'Ticket not found' }], isError: true };
-        }
-
-        const now = new Date();
-        const staffId = userAuth?.id || 0;
-        const poster = userAuth?.name || 'Staff';
-
-        const result = await db.query(`
-          INSERT INTO ${db.table('thread_entry')}
-          (thread_id, staff_id, type, poster, title, source, body, format, created)
-          VALUES (?, ?, 'N', ?, ?, 'MCP', ?, 'text', ?)
-        `, [thread.id, staffId, poster, params.title || null, params.note.trim(), now]);
-
-        await db.query(`UPDATE ${db.table('ticket')} SET updated = ? WHERE ticket_id = ?`, [now, params.ticket_id]);
-        await logEvent(thread.id, 'note', staffId, poster, { title: params.title || null });
+        const sdk = getSdk();
+        const result = await sdk.tickets.addNote(params.ticket_id, {
+          staffId: userAuth?.id || 0,
+          title: params.title || null,
+          body: params.note,
+          poster: userAuth?.name || 'Staff',
+        });
 
         return {
           content: [{ type: 'text', text: JSON.stringify({
-            entry_id: result.insertId, thread_id: thread.id, type: 'N', poster, created: now
+            entry_id: result.id, thread_id: result.thread_id, type: 'N', poster: result.poster, created: result.created
           }, null, 2) }]
         };
       } catch (err) {
+        if (err.code === 'NOT_FOUND') {
+          return { content: [{ type: 'text', text: 'Ticket not found' }], isError: true };
+        }
         return { content: [{ type: 'text', text: `Error adding note: ${err.message}` }], isError: true };
       }
     }
@@ -598,74 +371,16 @@ const registerTicketTools = (server, userAuth) => {
       }
 
       try {
-        const source = await db.queryOne(`
-          SELECT t.ticket_id, t.number, th.id as thread_id FROM ${db.table('ticket')} t
-          LEFT JOIN ${db.table('thread')} th ON th.object_id = t.ticket_id AND th.object_type = 'T'
-          WHERE t.ticket_id = ?
-        `, [params.source_ticket_id]);
+        const sdk = getSdk();
 
-        const target = await db.queryOne(`
-          SELECT t.ticket_id, t.number, th.id as thread_id FROM ${db.table('ticket')} t
-          LEFT JOIN ${db.table('thread')} th ON th.object_id = t.ticket_id AND th.object_type = 'T'
-          WHERE t.ticket_id = ?
-        `, [params.target_ticket_id]);
+        // Get ticket numbers for the response before merge
+        const source = await sdk.tickets.get(params.source_ticket_id);
+        const target = await sdk.tickets.get(params.target_ticket_id);
 
-        if (!source) return { content: [{ type: 'text', text: 'Source ticket not found' }], isError: true };
-        if (!target) return { content: [{ type: 'text', text: 'Target ticket not found' }], isError: true };
-
-        const now = new Date();
-        const staffId = userAuth?.id || 0;
-        const username = userAuth?.name || 'Staff';
-
-        // All merge writes in a single transaction
-        await db.transaction(async (txQuery, txQueryOne) => {
-          // Helper to log events within the transaction
-          const txLogEvent = async (threadId, eventName, data) => {
-            const ev = await txQueryOne(
-              `SELECT id FROM ${db.table('event')} WHERE name = ?`, [eventName]
-            );
-            if (!ev) return;
-            await txQuery(`
-              INSERT INTO ${db.table('thread_event')}
-              (thread_id, event_id, staff_id, username, data, timestamp)
-              VALUES (?, ?, ?, ?, ?, ?)
-            `, [threadId, ev.id, staffId, username, JSON.stringify(data), now]);
-          };
-
-          // Move thread entries and collaborators
-          if (source.thread_id && target.thread_id) {
-            await txQuery(
-              `UPDATE ${db.table('thread_entry')} SET thread_id = ? WHERE thread_id = ?`,
-              [target.thread_id, source.thread_id]
-            );
-            await txQuery(
-              `UPDATE ${db.table('thread_collaborator')} SET thread_id = ? WHERE thread_id = ?`,
-              [target.thread_id, source.thread_id]
-            );
-          }
-
-          // Close source ticket
-          const closedStatus = await txQueryOne(
-            `SELECT id FROM ${db.table('ticket_status')} WHERE state = 'closed' ORDER BY sort ASC LIMIT 1`
-          );
-          if (closedStatus) {
-            await txQuery(
-              `UPDATE ${db.table('ticket')} SET status_id = ?, closed = ?, updated = ? WHERE ticket_id = ?`,
-              [closedStatus.id, now, now, params.source_ticket_id]
-            );
-          }
-
-          // Log events
-          if (target.thread_id) {
-            await txLogEvent(target.thread_id, 'merged', {
-              merged_from: source.number, source_ticket_id: params.source_ticket_id
-            });
-          }
-          if (source.thread_id) {
-            await txLogEvent(source.thread_id, 'merged', {
-              merged_into: target.number, target_ticket_id: params.target_ticket_id
-            });
-          }
+        await sdk.tickets.merge(params.source_ticket_id, {
+          targetTicketId: params.target_ticket_id,
+          staffId: userAuth?.id || 0,
+          username: userAuth?.name || 'Staff',
         });
 
         return {
@@ -676,6 +391,11 @@ const registerTicketTools = (server, userAuth) => {
           }, null, 2) }]
         };
       } catch (err) {
+        if (err.code === 'NOT_FOUND') {
+          const msg = err.message.includes('Source') ? 'Source ticket not found' :
+                      err.message.includes('Target') ? 'Target ticket not found' : err.message;
+          return { content: [{ type: 'text', text: msg }], isError: true };
+        }
         return { content: [{ type: 'text', text: `Error merging tickets: ${err.message}` }], isError: true };
       }
     }

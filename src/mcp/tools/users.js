@@ -1,9 +1,11 @@
 /**
  * MCP User Tools
+ *
+ * Delegates to SDK user service for all business logic.
  */
 
 const { z } = require('zod');
-const db = require('../../lib/db');
+const { getSdk } = require('../../lib/sdk');
 
 const requireStaff = (userAuth) => {
   if (userAuth?.type !== 'staff' && userAuth?.type !== 'apikey') {
@@ -34,39 +36,22 @@ const registerUserTools = (server, userAuth) => {
     async (params) => {
       const staffCheck = requireStaff(userAuth); if (staffCheck) return staffCheck;
       try {
-        const page = Math.max(1, params.page || 1);
-        const limit = Math.min(100, Math.max(1, params.limit || 25));
-        const offset = (page - 1) * limit;
-
-        let sql = `
-          SELECT u.*, ue.address as email, o.name as org_name
-          FROM ${db.table('user')} u
-          LEFT JOIN ${db.table('user_email')} ue ON u.default_email_id = ue.id
-          LEFT JOIN ${db.table('organization')} o ON u.org_id = o.id
-          WHERE 1=1
-        `;
-        const sqlParams = [];
-
-        if (params.org_id) { sql += ` AND u.org_id = ?`; sqlParams.push(params.org_id); }
-        if (params.search) {
-          sql += ` AND (u.name LIKE ? OR ue.address LIKE ?)`;
-          const term = `%${params.search}%`;
-          sqlParams.push(term, term);
-        }
-
-        const countSql = sql.replace(/SELECT .*? FROM/s, 'SELECT COUNT(*) as count FROM');
-        const countResult = await db.queryOne(countSql, sqlParams);
-        const total = parseInt(countResult?.count || 0, 10);
-
-        sql += ` ORDER BY u.created DESC LIMIT ? OFFSET ?`;
-        sqlParams.push(limit, offset);
-
-        const users = await db.query(sql, sqlParams);
+        const sdk = getSdk();
+        const result = await sdk.users.list({
+          org_id: params.org_id,
+          search: params.search,
+          page: params.page,
+          limit: params.limit,
+        });
 
         return {
           content: [{ type: 'text', text: JSON.stringify({
-            users: users.map(u => ({ id: u.id, name: u.name, email: u.email, org_name: u.org_name, status: u.status, created: u.created })),
-            pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
+            users: result.data.map(u => ({
+              id: u.id, name: u.name, email: u.email,
+              org_name: u.organization?.name || null,
+              status: u.status, created: u.created
+            })),
+            pagination: result.pagination
           }, null, 2) }]
         };
       } catch (err) {
@@ -88,35 +73,20 @@ const registerUserTools = (server, userAuth) => {
     async (params) => {
       const adminCheck = requireAdmin(userAuth); if (adminCheck) return adminCheck;
       try {
-        const existing = await db.queryOne(`SELECT id FROM ${db.table('user_email')} WHERE address = ?`, [params.email]);
-        if (existing) return { content: [{ type: 'text', text: 'Email already exists' }], isError: true };
-
-        const now = new Date();
-        let userId;
-
-        await db.transaction(async (txQuery) => {
-          const userResult = await txQuery(`
-            INSERT INTO ${db.table('user')} (org_id, default_email_id, name, status, created, updated)
-            VALUES (?, 0, ?, 0, ?, ?)
-          `, [params.org_id || 0, params.name.trim(), now, now]);
-          userId = userResult.insertId;
-
-          const emailResult = await txQuery(`
-            INSERT INTO ${db.table('user_email')} (user_id, address, flags) VALUES (?, ?, 0)
-          `, [userId, params.email.trim()]);
-
-          await txQuery(`UPDATE ${db.table('user')} SET default_email_id = ? WHERE id = ?`, [emailResult.insertId, userId]);
-
-          if (params.username && params.password) {
-            if (params.password.length < 8) throw new Error('Password must be at least 8 characters');
-            const bcrypt = require('bcryptjs');
-            const hash = await bcrypt.hash(params.password, 10);
-            await txQuery(`INSERT INTO ${db.table('user_account')} (user_id, username, passwd, status) VALUES (?, ?, ?, 1)`, [userId, params.username, hash]);
-          }
+        const sdk = getSdk();
+        const result = await sdk.users.create({
+          name: params.name,
+          email: params.email,
+          org_id: params.org_id,
+          username: params.username,
+          password: params.password,
         });
 
-        return { content: [{ type: 'text', text: JSON.stringify({ id: userId, name: params.name, email: params.email, created: now }, null, 2) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
+        if (err.code === 'CONFLICT') {
+          return { content: [{ type: 'text', text: 'Email already exists' }], isError: true };
+        }
         return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
       }
     }
@@ -134,20 +104,22 @@ const registerUserTools = (server, userAuth) => {
     async (params) => {
       const adminCheck = requireAdmin(userAuth); if (adminCheck) return adminCheck;
       try {
-        const user = await db.queryOne(`SELECT id FROM ${db.table('user')} WHERE id = ?`, [params.user_id]);
-        if (!user) return { content: [{ type: 'text', text: 'User not found' }], isError: true };
+        const sdk = getSdk();
+        const changes = {};
+        if (params.name !== undefined) changes.name = params.name;
+        if (params.org_id !== undefined) changes.org_id = params.org_id;
+        if (params.status !== undefined) changes.status = params.status;
 
-        const updates = [];
-        const sqlParams = [];
-        if (params.name !== undefined) { updates.push('name = ?'); sqlParams.push(params.name.trim()); }
-        if (params.org_id !== undefined) { updates.push('org_id = ?'); sqlParams.push(params.org_id); }
-        if (params.status !== undefined) { updates.push('status = ?'); sqlParams.push(params.status); }
-        if (updates.length === 0) return { content: [{ type: 'text', text: 'No updates provided' }], isError: true };
+        if (Object.keys(changes).length === 0) {
+          return { content: [{ type: 'text', text: 'No updates provided' }], isError: true };
+        }
 
-        updates.push('updated = ?'); sqlParams.push(new Date()); sqlParams.push(params.user_id);
-        await db.query(`UPDATE ${db.table('user')} SET ${updates.join(', ')} WHERE id = ?`, sqlParams);
+        await sdk.users.update(params.user_id, changes);
         return { content: [{ type: 'text', text: JSON.stringify({ user_id: params.user_id, updated: true }) }] };
       } catch (err) {
+        if (err.code === 'NOT_FOUND') {
+          return { content: [{ type: 'text', text: 'User not found' }], isError: true };
+        }
         return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
       }
     }
@@ -162,16 +134,16 @@ const registerUserTools = (server, userAuth) => {
     async (params) => {
       const adminCheck = requireAdmin(userAuth); if (adminCheck) return adminCheck;
       try {
-        const ticketCount = await db.queryValue(`SELECT COUNT(*) FROM ${db.table('ticket')} WHERE user_id = ?`, [params.user_id]);
-        if (parseInt(ticketCount || 0, 10) > 0) return { content: [{ type: 'text', text: 'Cannot delete: user has tickets' }], isError: true };
-
-        await db.transaction(async (txQuery) => {
-          await txQuery(`DELETE FROM ${db.table('user_account')} WHERE user_id = ?`, [params.user_id]);
-          await txQuery(`DELETE FROM ${db.table('user_email')} WHERE user_id = ?`, [params.user_id]);
-          await txQuery(`DELETE FROM ${db.table('user')} WHERE id = ?`, [params.user_id]);
-        });
+        const sdk = getSdk();
+        await sdk.users.remove(params.user_id);
         return { content: [{ type: 'text', text: JSON.stringify({ user_id: params.user_id, deleted: true }) }] };
       } catch (err) {
+        if (err.code === 'CONFLICT') {
+          return { content: [{ type: 'text', text: 'Cannot delete: user has tickets' }], isError: true };
+        }
+        if (err.code === 'NOT_FOUND') {
+          return { content: [{ type: 'text', text: 'User not found' }], isError: true };
+        }
         return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
       }
     }

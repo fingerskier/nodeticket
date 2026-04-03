@@ -1,9 +1,11 @@
 /**
  * MCP Staff Tools
+ *
+ * Delegates to SDK staff service for all business logic.
  */
 
 const { z } = require('zod');
-const db = require('../../lib/db');
+const { getSdk } = require('../../lib/sdk');
 
 const requireStaff = (userAuth) => {
   if (userAuth?.type !== 'staff' && userAuth?.type !== 'apikey') {
@@ -34,40 +36,23 @@ const registerStaffTools = (server, userAuth) => {
     async (params) => {
       const staffCheck = requireStaff(userAuth); if (staffCheck) return staffCheck;
       try {
-        const page = Math.max(1, params.page || 1);
-        const limit = Math.min(100, Math.max(1, params.limit || 25));
-        const offset = (page - 1) * limit;
-
-        let sql = `
-          SELECT s.*, d.name as dept_name, r.name as role_name
-          FROM ${db.table('staff')} s
-          LEFT JOIN ${db.table('department')} d ON s.dept_id = d.id
-          LEFT JOIN ${db.table('role')} r ON s.role_id = r.id
-          WHERE 1=1
-        `;
-        const sqlParams = [];
-
-        if (params.dept_id) { sql += ` AND s.dept_id = ?`; sqlParams.push(params.dept_id); }
-        if (params.isactive !== undefined) { sql += ` AND s.isactive = ?`; sqlParams.push(params.isactive ? 1 : 0); }
-
-        const countSql = sql.replace(/SELECT .*? FROM/s, 'SELECT COUNT(*) as count FROM');
-        const countResult = await db.queryOne(countSql, sqlParams);
-        const total = parseInt(countResult?.count || 0, 10);
-
-        sql += ` ORDER BY s.lastname, s.firstname LIMIT ? OFFSET ?`;
-        sqlParams.push(limit, offset);
-
-        const staff = await db.query(sql, sqlParams);
+        const sdk = getSdk();
+        const result = await sdk.staff.list({
+          dept_id: params.dept_id,
+          isactive: params.isactive,
+          page: params.page,
+          limit: params.limit,
+        });
 
         return {
           content: [{ type: 'text', text: JSON.stringify({
-            staff: staff.map(s => ({
+            staff: result.data.map(s => ({
               staff_id: s.staff_id, username: s.username,
-              name: `${s.firstname || ''} ${s.lastname || ''}`.trim(),
-              email: s.email, dept_name: s.dept_name, role_name: s.role_name,
-              isactive: !!s.isactive, isadmin: !!s.isadmin
+              name: s.name,
+              email: s.email, dept_name: s.department?.name, role_name: s.role?.name,
+              isactive: s.isactive, isadmin: s.isadmin
             })),
-            pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
+            pagination: result.pagination
           }, null, 2) }]
         };
       } catch (err) {
@@ -93,21 +78,26 @@ const registerStaffTools = (server, userAuth) => {
     async (params) => {
       const adminCheck = requireAdmin(userAuth); if (adminCheck) return adminCheck;
       try {
-        const existing = await db.queryOne(`SELECT staff_id FROM ${db.table('staff')} WHERE username = ?`, [params.username]);
-        if (existing) return { content: [{ type: 'text', text: 'Username already exists' }], isError: true };
-        if (params.password.length < 8) return { content: [{ type: 'text', text: 'Password must be at least 8 characters' }], isError: true };
+        const sdk = getSdk();
+        const result = await sdk.staff.create({
+          username: params.username,
+          firstname: params.firstname,
+          lastname: params.lastname,
+          email: params.email,
+          password: params.password,
+          dept_id: params.dept_id,
+          role_id: params.role_id,
+          isadmin: params.isadmin,
+          isactive: params.isactive,
+        });
 
-        const bcrypt = require('bcryptjs');
-        const hash = await bcrypt.hash(params.password, 10);
-        const now = new Date();
-
-        const result = await db.query(`
-          INSERT INTO ${db.table('staff')} (username, firstname, lastname, email, passwd, dept_id, role_id, isadmin, isactive, created, updated)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `, [params.username, params.firstname, params.lastname, params.email, hash, params.dept_id, params.role_id, params.isadmin ? 1 : 0, params.isactive ? 1 : 0, now, now]);
-
-        return { content: [{ type: 'text', text: JSON.stringify({ staff_id: result.insertId, username: params.username, created: now }, null, 2) }] };
+        return { content: [{ type: 'text', text: JSON.stringify({
+          staff_id: result.staff_id, username: result.username, created: result.created
+        }, null, 2) }] };
       } catch (err) {
+        if (err.code === 'CONFLICT') {
+          return { content: [{ type: 'text', text: 'Username already exists' }], isError: true };
+        }
         return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
       }
     }
@@ -130,32 +120,27 @@ const registerStaffTools = (server, userAuth) => {
     async (params) => {
       const adminCheck = requireAdmin(userAuth); if (adminCheck) return adminCheck;
       try {
-        const staff = await db.queryOne(`SELECT staff_id FROM ${db.table('staff')} WHERE staff_id = ?`, [params.staff_id]);
-        if (!staff) return { content: [{ type: 'text', text: 'Staff member not found' }], isError: true };
+        const sdk = getSdk();
+        const changes = {};
+        if (params.firstname !== undefined) changes.firstname = params.firstname;
+        if (params.lastname !== undefined) changes.lastname = params.lastname;
+        if (params.email !== undefined) changes.email = params.email;
+        if (params.dept_id !== undefined) changes.dept_id = params.dept_id;
+        if (params.role_id !== undefined) changes.role_id = params.role_id;
+        if (params.isadmin !== undefined) changes.isadmin = params.isadmin;
+        if (params.isactive !== undefined) changes.isactive = params.isactive;
+        if (params.password !== undefined) changes.password = params.password;
 
-        const updates = [];
-        const sqlParams = [];
-
-        if (params.firstname !== undefined) { updates.push('firstname = ?'); sqlParams.push(params.firstname); }
-        if (params.lastname !== undefined) { updates.push('lastname = ?'); sqlParams.push(params.lastname); }
-        if (params.email !== undefined) { updates.push('email = ?'); sqlParams.push(params.email); }
-        if (params.dept_id !== undefined) { updates.push('dept_id = ?'); sqlParams.push(params.dept_id); }
-        if (params.role_id !== undefined) { updates.push('role_id = ?'); sqlParams.push(params.role_id); }
-        if (params.isadmin !== undefined) { updates.push('isadmin = ?'); sqlParams.push(params.isadmin ? 1 : 0); }
-        if (params.isactive !== undefined) { updates.push('isactive = ?'); sqlParams.push(params.isactive ? 1 : 0); }
-        if (params.password !== undefined) {
-          if (params.password.length < 8) return { content: [{ type: 'text', text: 'Password must be at least 8 characters' }], isError: true };
-          const bcrypt = require('bcryptjs');
-          const hash = await bcrypt.hash(params.password, 10);
-          updates.push('passwd = ?'); sqlParams.push(hash);
+        if (Object.keys(changes).length === 0) {
+          return { content: [{ type: 'text', text: 'No updates provided' }], isError: true };
         }
 
-        if (updates.length === 0) return { content: [{ type: 'text', text: 'No updates provided' }], isError: true };
-
-        updates.push('updated = ?'); sqlParams.push(new Date()); sqlParams.push(params.staff_id);
-        await db.query(`UPDATE ${db.table('staff')} SET ${updates.join(', ')} WHERE staff_id = ?`, sqlParams);
+        await sdk.staff.update(params.staff_id, changes);
         return { content: [{ type: 'text', text: JSON.stringify({ staff_id: params.staff_id, updated: true }) }] };
       } catch (err) {
+        if (err.code === 'NOT_FOUND') {
+          return { content: [{ type: 'text', text: 'Staff member not found' }], isError: true };
+        }
         return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
       }
     }
@@ -170,22 +155,17 @@ const registerStaffTools = (server, userAuth) => {
     async (params) => {
       const adminCheck = requireAdmin(userAuth); if (adminCheck) return adminCheck;
       try {
-        const ticketCount = await db.queryValue(`SELECT COUNT(*) FROM ${db.table('ticket')} WHERE staff_id = ?`, [params.staff_id]);
-        if (parseInt(ticketCount || 0, 10) > 0) return { content: [{ type: 'text', text: 'Cannot delete: staff has assigned tickets' }], isError: true };
-
-        const deptMgr = await db.queryValue(`SELECT COUNT(*) FROM ${db.table('department')} WHERE manager_id = ?`, [params.staff_id]);
-        if (parseInt(deptMgr || 0, 10) > 0) return { content: [{ type: 'text', text: 'Cannot delete: staff is a department manager' }], isError: true };
-
-        const teamLead = await db.queryValue(`SELECT COUNT(*) FROM ${db.table('team')} WHERE lead_id = ?`, [params.staff_id]);
-        if (parseInt(teamLead || 0, 10) > 0) return { content: [{ type: 'text', text: 'Cannot delete: staff is a team lead' }], isError: true };
-
-        await db.transaction(async (txQuery) => {
-          await txQuery(`DELETE FROM ${db.table('staff_dept_access')} WHERE staff_id = ?`, [params.staff_id]);
-          await txQuery(`DELETE FROM ${db.table('team_member')} WHERE staff_id = ?`, [params.staff_id]);
-          await txQuery(`DELETE FROM ${db.table('staff')} WHERE staff_id = ?`, [params.staff_id]);
-        });
+        const sdk = getSdk();
+        await sdk.staff.remove(params.staff_id);
         return { content: [{ type: 'text', text: JSON.stringify({ staff_id: params.staff_id, deleted: true }) }] };
       } catch (err) {
+        if (err.code === 'CONFLICT') {
+          // Preserve the specific conflict message from the service
+          return { content: [{ type: 'text', text: err.message }], isError: true };
+        }
+        if (err.code === 'NOT_FOUND') {
+          return { content: [{ type: 'text', text: 'Staff member not found' }], isError: true };
+        }
         return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
       }
     }

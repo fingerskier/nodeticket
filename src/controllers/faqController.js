@@ -1,8 +1,11 @@
 /**
- * FAQ Controller
+ * FAQ Controller — thin HTTP adapter
+ *
+ * FAQs don't have a dedicated SDK service. Complex queries with
+ * visibility checks use the SDK connection for table prefixing.
  */
 
-const db = require('../lib/db');
+const { getSdk } = require('../lib/sdk');
 const { ApiError } = require('../middleware/errorHandler');
 
 /**
@@ -21,16 +24,16 @@ const paginate = (query) => {
 const list = async (req, res) => {
   const { page, limit, offset } = paginate(req.query);
   const { category_id, search } = req.query;
+  const conn = getSdk().connection;
 
   let sql = `
     SELECT f.*, c.name as category_name
-    FROM ${db.table('faq')} f
-    LEFT JOIN ${db.table('faq_category')} c ON f.category_id = c.category_id
+    FROM ${conn.table('faq')} f
+    LEFT JOIN ${conn.table('faq_category')} c ON f.category_id = c.category_id
     WHERE f.ispublished = 1
   `;
   const params = [];
 
-  // Only show FAQs in public categories for non-staff
   if (!req.auth || req.auth.type === 'user') {
     sql += ` AND (c.ispublic = 1 OR c.category_id IS NULL)`;
   }
@@ -42,20 +45,18 @@ const list = async (req, res) => {
 
   if (search) {
     sql += ` AND (f.question LIKE ? OR f.answer LIKE ? OR f.keywords LIKE ?)`;
-    const searchTerm = `%${search}%`;
-    params.push(searchTerm, searchTerm, searchTerm);
+    const term = `%${search}%`;
+    params.push(term, term, term);
   }
 
-  // Get total count
   const countSql = sql.replace(/SELECT .*? FROM/s, 'SELECT COUNT(*) as count FROM');
-  const countResult = await db.queryOne(countSql, params);
+  const countResult = await conn.queryOne(countSql, params);
   const total = parseInt(countResult?.count || 0, 10);
 
-  // Add pagination
   sql += ` ORDER BY f.question LIMIT ? OFFSET ?`;
   params.push(limit, offset);
 
-  const faqs = await db.query(sql, params);
+  const faqs = await conn.query(sql, params);
 
   res.json({
     success: true,
@@ -68,14 +69,9 @@ const list = async (req, res) => {
       keywords: f.keywords,
       ispublished: !!f.ispublished,
       created: f.created,
-      updated: f.updated
+      updated: f.updated,
     })),
-    pagination: {
-      page,
-      limit,
-      total,
-      totalPages: Math.ceil(total / limit)
-    }
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
 };
 
@@ -83,22 +79,23 @@ const list = async (req, res) => {
  * List FAQ categories
  */
 const listCategories = async (req, res) => {
+  const conn = getSdk().connection;
+
   let sql = `
     SELECT c.*,
-           (SELECT COUNT(*) FROM ${db.table('faq')} f WHERE f.category_id = c.category_id AND f.ispublished = 1) as faq_count
-    FROM ${db.table('faq_category')} c
+           (SELECT COUNT(*) FROM ${conn.table('faq')} f WHERE f.category_id = c.category_id AND f.ispublished = 1) as faq_count
+    FROM ${conn.table('faq_category')} c
     WHERE 1=1
   `;
   const params = [];
 
-  // Only show public categories for non-staff
   if (!req.auth || req.auth.type === 'user') {
     sql += ` AND c.ispublic = 1`;
   }
 
   sql += ` ORDER BY c.name`;
 
-  const categories = await db.query(sql, params);
+  const categories = await conn.query(sql, params);
 
   res.json({
     success: true,
@@ -109,8 +106,8 @@ const listCategories = async (req, res) => {
       description: c.description,
       ispublic: !!c.ispublic,
       faqCount: parseInt(c.faq_count || 0, 10),
-      created: c.created
-    }))
+      created: c.created,
+    })),
   });
 };
 
@@ -119,17 +116,16 @@ const listCategories = async (req, res) => {
  */
 const get = async (req, res) => {
   const { id } = req.params;
+  const conn = getSdk().connection;
 
-  const faq = await db.queryOne(`
+  const faq = await conn.queryOne(`
     SELECT f.*, c.name as category_name, c.ispublic as category_ispublic
-    FROM ${db.table('faq')} f
-    LEFT JOIN ${db.table('faq_category')} c ON f.category_id = c.category_id
+    FROM ${conn.table('faq')} f
+    LEFT JOIN ${conn.table('faq_category')} c ON f.category_id = c.category_id
     WHERE f.faq_id = ?
   `, [id]);
 
-  if (!faq) {
-    throw ApiError.notFound('FAQ article not found');
-  }
+  if (!faq) throw ApiError.notFound('FAQ article not found');
 
   // Check visibility for non-staff
   if ((!req.auth || req.auth.type === 'user')) {
@@ -138,11 +134,10 @@ const get = async (req, res) => {
     }
   }
 
-  // Get related topics
-  const topics = await db.query(`
+  const topics = await conn.query(`
     SELECT ht.topic_id, ht.topic
-    FROM ${db.table('faq_topic')} ft
-    JOIN ${db.table('help_topic')} ht ON ft.topic_id = ht.topic_id
+    FROM ${conn.table('faq_topic')} ft
+    JOIN ${conn.table('help_topic')} ht ON ft.topic_id = ht.topic_id
     WHERE ft.faq_id = ?
   `, [id]);
 
@@ -150,27 +145,21 @@ const get = async (req, res) => {
     success: true,
     data: {
       faq_id: faq.faq_id,
-      category: faq.category_id ? {
-        category_id: faq.category_id,
-        name: faq.category_name
-      } : null,
+      category: faq.category_id ? { category_id: faq.category_id, name: faq.category_name } : null,
       question: faq.question,
       answer: faq.answer,
       keywords: faq.keywords,
       ispublished: !!faq.ispublished,
       notes: faq.notes,
-      topics: topics.map(t => ({
-        topic_id: t.topic_id,
-        topic: t.topic
-      })),
+      topics: topics.map(t => ({ topic_id: t.topic_id, topic: t.topic })),
       created: faq.created,
-      updated: faq.updated
-    }
+      updated: faq.updated,
+    },
   });
 };
 
 module.exports = {
   list,
   listCategories,
-  get
+  get,
 };
