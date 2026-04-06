@@ -174,4 +174,11 @@ async function handler(nt, args) {
   }
 }
 
-module.exports = { describe, help, handler };
+/** @type {import('./').CliCommand & { __test: Object }} */
+module.exports = {
+  describe,
+  help,
+  handler,
+  // Exposed for unit tests only; do not use from other modules.
+  __test: { csvEscape, csvRow, formatDate, BUILTIN_ACCESSORS, CONTACT_FIELDS },
+};

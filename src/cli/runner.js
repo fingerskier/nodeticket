@@ -1,24 +1,56 @@
 /**
  * CLI lifecycle runner.
- * Initializes the SDK, invokes the command handler, and ensures the
- * connection is closed. Maps SDK errors to exit codes.
+ *
+ * Initializes the SDK, invokes the command handler, and guarantees the
+ * DB pool is closed — even on error. Maps SDK error classes to CLI exit
+ * codes so each command can simply throw.
+ *
+ * Exit code contract:
+ *   0 — success
+ *   1 — unexpected / unclassified error
+ *   2 — ValidationError (bad input)
+ *   3 — NotFoundError
+ *   4 — ConflictError
+ *   5 — ConnectionError
+ *
+ * On error, the message goes to stderr. Set `DEBUG=1` in the environment
+ * to also print the full stack.
+ *
+ * Note: we assign `process.exitCode` rather than calling `process.exit()`
+ * so the `finally` block can `await nt.close()` cleanly before Node exits.
+ *
+ * @module cli/runner
  */
 const config = require('../config');
-const nodeticket = require('../sdk');
-const { ValidationError, NotFoundError, ConflictError, ConnectionError } = nodeticket.errors;
+const defaultSdk = require('../sdk');
 
-async function run(handler, args) {
+/**
+ * Run a CLI command handler with SDK lifecycle + error mapping.
+ *
+ * @param {(nt: Object, args: Object) => Promise<void>} handler
+ *   Command body. Receives the initialized SDK and parsed argv.
+ * @param {Object} args - parsed argv (from `src/cli/args.js`)
+ * @param {Object} [deps] - injection seam for tests
+ * @param {Object} [deps.sdk=defaultSdk] - the nodeticket SDK module
+ * @param {Object} [deps.cfg=config.db] - DB config block
+ * @returns {Promise<void>}
+ */
+async function run(handler, args, deps = {}) {
+  const sdk = deps.sdk || defaultSdk;
+  const cfg = deps.cfg || config.db;
+  const { ValidationError, NotFoundError, ConflictError, ConnectionError } = sdk.errors;
+
   let nt;
   try {
-    nt = await nodeticket.init({
-      dialect: config.db.dialect,
-      host: config.db.host,
-      port: config.db.port,
-      database: config.db.name,
-      user: config.db.user,
-      password: config.db.password,
-      prefix: config.db.prefix,
-      pool: config.db.pool,
+    nt = await sdk.init({
+      dialect: cfg.dialect,
+      host: cfg.host,
+      port: cfg.port,
+      database: cfg.name,
+      user: cfg.user,
+      password: cfg.password,
+      prefix: cfg.prefix,
+      pool: cfg.pool,
     });
     await handler(nt, args);
     process.exitCode = 0;

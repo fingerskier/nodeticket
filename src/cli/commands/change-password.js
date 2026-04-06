@@ -20,9 +20,20 @@ Options:
 Exactly one of --user-id or --email is required.
 `.trim();
 
+/**
+ * Resolve a user id by email address.
+ *
+ * `nt.users.list`'s `search` filter performs a name-OR-email LIKE match,
+ * so multiple rows may come back for a given needle. This pages through
+ * results (100/page) and picks the first exact case-insensitive email
+ * match on `user.email` (the default_email_id join from user_email).
+ *
+ * @param {Object} nt - initialized SDK instance
+ * @param {string} email - exact email address to look up
+ * @returns {Promise<number>} matching user id
+ * @throws {NotFoundError} if no user matches
+ */
 async function resolveUserIdByEmail(nt, email) {
-  // users.list supports a `search` filter that matches name OR email LIKE.
-  // Page through results and exact-match on email to be safe.
   let page = 1;
   while (true) {
     const { data, pagination } = await nt.users.list({ search: email, page, limit: 100 });
@@ -64,4 +75,5 @@ async function handler(nt, args) {
   process.stdout.write(`ok user=${userId}\n`);
 }
 
+/** @type {import('./').CliCommand} */
 module.exports = { describe, help, handler };

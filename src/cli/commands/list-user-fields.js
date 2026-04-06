@@ -59,4 +59,5 @@ async function handler(nt) {
   process.stdout.write(`\n${fields.length} field(s)\n`);
 }
 
+/** @type {import('./').CliCommand} */
 module.exports = { describe, help, handler };
