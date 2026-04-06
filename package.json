@@ -3,9 +3,13 @@
   "version": "2026.3.1",
   "description": "Node.js help desk ticketing system with osTicket database interoperability",
   "main": "src/sdk/index.js",
+  "bin": {
+    "nodeticket": "bin/nodeticket.js"
+  },
   "scripts": {
     "start": "node src/app.js",
     "dev": "node --watch src/app.js",
+    "cli": "node bin/nodeticket.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [

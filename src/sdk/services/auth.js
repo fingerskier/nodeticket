@@ -148,11 +148,55 @@ module.exports = (conn, data) => {
     }
   };
 
+  /**
+   * Admin password reset — sets a new password without verifying the current one.
+   *
+   * @param {string} type - Account type: 'staff' or 'user'
+   * @param {number|string} id - Staff ID or User ID
+   * @param {string} newPassword - New plaintext password (min 8 chars)
+   * @returns {Promise<void>}
+   * @throws {ValidationError} If newPassword is missing or too short
+   * @throws {NotFoundError} If the account does not exist
+   */
+  const setPassword = async (type, id, newPassword) => {
+    if (!newPassword) throw new ValidationError('New password is required');
+    if (newPassword.length < 8) {
+      throw new ValidationError('New password must be at least 8 characters');
+    }
+
+    let account;
+    if (type === 'staff') {
+      account = await conn.queryOne(
+        `SELECT staff_id FROM ${conn.table('staff')} WHERE staff_id = ?`, [id]
+      );
+    } else {
+      account = await conn.queryOne(
+        `SELECT user_id FROM ${conn.table('user_account')} WHERE user_id = ?`, [id]
+      );
+    }
+    if (!account) throw new NotFoundError('Account not found');
+
+    const hashedPassword = await hashPassword(newPassword);
+
+    if (type === 'staff') {
+      await conn.query(
+        `UPDATE ${conn.table('staff')} SET passwd = ?, updated = ? WHERE staff_id = ?`,
+        [hashedPassword, new Date(), id],
+      );
+    } else {
+      await conn.query(
+        `UPDATE ${conn.table('user_account')} SET passwd = ? WHERE user_id = ?`,
+        [hashedPassword, id],
+      );
+    }
+  };
+
   return {
     verifyPassword,
     hashPassword,
     lookupStaffByCredentials,
     lookupUserByCredentials,
     changePassword,
+    setPassword,
   };
 };

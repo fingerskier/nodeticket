@@ -347,11 +347,145 @@ module.exports = (conn, data) => {
     });
   };
 
+  /**
+   * Bulk-fetch contact info (phone, address) from osTicket dynamic form entries
+   * for the given user IDs. Returns a Map keyed by user id.
+   *
+   * osTicket stores user form data in form_entry (object_type='U', object_id=user.id)
+   * and form_entry_values keyed by form_field.
+   *
+   * @param {Array<number|string>} userIds
+   * @returns {Promise<Map<number, { phone: string, address: string }>>}
+   */
+  const getContactInfoBulk = async (userIds) => {
+    const out = new Map();
+    if (!userIds || userIds.length === 0) return out;
+
+    const placeholders = userIds.map(() => '?').join(',');
+    const rows = await conn.query(
+      `
+      SELECT fe.object_id AS user_id, ff.name AS field_name, fev.value
+      FROM ${conn.table('form_entry')} fe
+      JOIN ${conn.table('form_entry_values')} fev ON fev.entry_id = fe.id
+      JOIN ${conn.table('form_field')} ff ON fev.field_id = ff.id
+      WHERE fe.object_type = 'U'
+        AND fe.object_id IN (${placeholders})
+        AND ff.name IN ('phone', 'address')
+      `,
+      userIds,
+    );
+
+    for (const id of userIds) out.set(Number(id), { phone: '', address: '' });
+    for (const r of rows) {
+      const entry = out.get(Number(r.user_id)) || { phone: '', address: '' };
+      if (r.field_name === 'phone') entry.phone = r.value || '';
+      else if (r.field_name === 'address') entry.address = r.value || '';
+      out.set(Number(r.user_id), entry);
+    }
+    return out;
+  };
+
+  /**
+   * List all dynamic form fields used by user form entries.
+   *
+   * Discovery is schema-agnostic: we find every distinct form_id that
+   * has at least one form_entry with object_type='U', then return all
+   * fields belonging to those forms. This works regardless of whether
+   * the install uses form.type='U', a custom form, or multiple forms.
+   *
+   * As a fallback (e.g. brand-new DB with no user entries yet), we
+   * also include forms with type='U' if the discovery query is empty.
+   *
+   * @returns {Promise<Array<{ id: number, name: string, label: string, type: string, form_id: number, sort: number }>>}
+   */
+  const listUserFormFields = async () => {
+    // Step 1: discover form_ids actually attached to users
+    const formIdRows = await conn.query(`
+      SELECT DISTINCT form_id
+      FROM ${conn.table('form_entry')}
+      WHERE object_type = 'U'
+    `);
+    let formIds = formIdRows.map((r) => r.form_id).filter((id) => id != null);
+
+    // Step 2: fallback to type='U' if nothing found
+    if (formIds.length === 0) {
+      const typeRows = await conn.query(
+        `SELECT id FROM ${conn.table('form')} WHERE type = 'U'`,
+      );
+      formIds = typeRows.map((r) => r.id);
+    }
+
+    if (formIds.length === 0) return [];
+
+    const placeholders = formIds.map(() => '?').join(',');
+    const rows = await conn.query(
+      `
+      SELECT id, form_id, name, label, type, sort
+      FROM ${conn.table('form_field')}
+      WHERE form_id IN (${placeholders})
+      ORDER BY form_id, sort, id
+      `,
+      formIds,
+    );
+
+    return rows.map((r) => ({
+      id: r.id,
+      form_id: r.form_id,
+      name: r.name || '',
+      label: r.label || '',
+      type: r.type || '',
+      sort: r.sort,
+    }));
+  };
+
+  /**
+   * Bulk-fetch values for the given dynamic form field NAMES across the given user IDs.
+   * Returns Map<userId, Map<fieldName, value>>.
+   *
+   * @param {Array<number|string>} userIds
+   * @param {Array<string>} fieldNames - form_field.name values (machine names)
+   * @returns {Promise<Map<number, Map<string, string>>>}
+   */
+  const getFormValuesBulk = async (userIds, fieldNames) => {
+    const out = new Map();
+    if (!userIds || userIds.length === 0) return out;
+    if (!fieldNames || fieldNames.length === 0) {
+      for (const id of userIds) out.set(Number(id), new Map());
+      return out;
+    }
+
+    const userPlaceholders = userIds.map(() => '?').join(',');
+    const fieldPlaceholders = fieldNames.map(() => '?').join(',');
+
+    const rows = await conn.query(
+      `
+      SELECT fe.object_id AS user_id, ff.name AS field_name, fev.value
+      FROM ${conn.table('form_entry')} fe
+      JOIN ${conn.table('form_entry_values')} fev ON fev.entry_id = fe.id
+      JOIN ${conn.table('form_field')} ff ON fev.field_id = ff.id
+      WHERE fe.object_type = 'U'
+        AND fe.object_id IN (${userPlaceholders})
+        AND ff.name IN (${fieldPlaceholders})
+      `,
+      [...userIds, ...fieldNames],
+    );
+
+    for (const id of userIds) out.set(Number(id), new Map());
+    for (const r of rows) {
+      const m = out.get(Number(r.user_id));
+      if (m) m.set(r.field_name, r.value || '');
+    }
+    return out;
+  };
+
   return {
     list,
     get,
     getTickets,
     getOrganizations,
+    getContactInfoBulk,
+    listUserFormFields,
+    getFormValuesBulk,
     create,
     update,
     remove,
