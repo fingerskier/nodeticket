@@ -3,7 +3,9 @@
  */
 
 const { getSdk } = require('../lib/sdk');
+const db = require('../lib/db');
 const { ApiError } = require('../middleware/errorHandler');
+const { applyFilters } = require('./filterController');
 
 /**
  * List tickets
@@ -56,13 +58,65 @@ const create = async (req, res) => {
     throw ApiError.forbidden('Only users can create tickets');
   }
 
-  const data = await getSdk().tickets.create({
+  const sdk = getSdk();
+  const conn = sdk.connection;
+
+  // Load topic defaults so filter can see/override them
+  const topic = await conn.queryOne(
+    `SELECT ht.topic_id, ht.dept_id, ht.priority_id, ht.sla_id
+     FROM ${conn.table('help_topic')} ht WHERE ht.topic_id = ?`,
+    [req.body.topic_id]
+  );
+
+  // Load user email for filter evaluation
+  let userEmail = req.auth?.email || '';
+  if (!userEmail) {
+    const ue = await conn.queryOne(
+      `SELECT ue.address FROM ${conn.table('user')} u
+       LEFT JOIN ${conn.table('user_email')} ue ON u.default_email_id = ue.id
+       WHERE u.id = ?`, [userId]
+    );
+    userEmail = ue?.address || '';
+  }
+
+  const ticketData = {
+    subject: req.body.subject,
+    body: req.body.message,
+    email: userEmail,
+    dept_id: topic?.dept_id || 0,
+    topic_id: req.body.topic_id,
+    priority_id: topic?.priority_id || 0,
+    source: 'Web',
+  };
+
+  // Run filter engine — reject or collect field updates
+  const filterResult = await applyFilters(ticketData);
+  if (filterResult?._rejected) {
+    throw ApiError.badRequest(filterResult._rejectMessage || 'Rejected by filter');
+  }
+
+  const data = await sdk.tickets.create({
     userId,
     topicId: req.body.topic_id,
     subject: req.body.subject,
     body: req.body.message,
     source: 'Web',
   });
+
+  // Apply any non-reject filter field updates
+  const updateFields = {};
+  for (const [k, v] of Object.entries(filterResult || {})) {
+    if (!k.startsWith('_')) updateFields[k] = v;
+  }
+  if (Object.keys(updateFields).length > 0) {
+    const cols = [];
+    const args = [];
+    for (const [col, val] of Object.entries(updateFields)) {
+      cols.push(`${col} = ?`); args.push(val);
+    }
+    args.push(data.ticket_id);
+    await db.query(`UPDATE ${db.table('ticket')} SET ${cols.join(', ')}, updated = NOW() WHERE ticket_id = ?`, args);
+  }
 
   res.status(201).json({ success: true, message: 'Ticket created successfully', data });
 };
