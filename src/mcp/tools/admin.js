@@ -325,6 +325,107 @@ const registerAdminTools = (server, userAuth) => {
     }
   );
 
+  // ── Help Topics ──
+
+  server.tool(
+    'create_help_topic',
+    'Create a help topic.',
+    {
+      topic: z.string().describe('Topic name (1-128 chars)'),
+      topic_pid: z.number().optional().describe('Parent topic id (0 for top-level)'),
+      dept_id: z.number().optional(),
+      priority_id: z.number().optional(),
+      sla_id: z.number().optional(),
+      ispublic: z.boolean().optional(),
+      notes: z.string().optional(),
+    },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        const parentId = params.topic_pid || 0;
+        const dup = await db.queryOne(
+          `SELECT topic_id FROM ${db.table('help_topic')} WHERE LOWER(topic) = LOWER(?) AND topic_pid = ?`,
+          [params.topic.trim(), parentId]
+        );
+        if (dup) return { content: [{ type: 'text', text: 'A topic with that name already exists in this scope' }], isError: true };
+
+        const now = new Date();
+        const result = await db.query(
+          `INSERT INTO ${db.table('help_topic')}
+           (topic_pid, topic, ispublic, noautoresp, flags, sort, dept_id, priority_id, sla_id, staff_id, team_id, notes, created, updated)
+           VALUES (?, ?, ?, ?, 1, 0, ?, ?, ?, 0, 0, ?, ?, ?)`,
+          [parentId, params.topic.trim(), params.ispublic === false ? 0 : 1, 0,
+           params.dept_id || 0, params.priority_id || 0, params.sla_id || 0,
+           params.notes || null, now, now]
+        );
+        const id = result?.insertId || result?.lastInsertId || result?.id;
+        return { content: [{ type: 'text', text: JSON.stringify({ topic_id: id, topic: params.topic.trim() }) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
+  server.tool(
+    'update_help_topic',
+    'Update a help topic.',
+    {
+      topic_id: z.number(),
+      topic: z.string().optional(),
+      topic_pid: z.number().optional(),
+      dept_id: z.number().optional(),
+      priority_id: z.number().optional(),
+      sla_id: z.number().optional(),
+      ispublic: z.boolean().optional(),
+      notes: z.string().optional(),
+    },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        const existing = await db.queryOne(`SELECT * FROM ${db.table('help_topic')} WHERE topic_id = ?`, [params.topic_id]);
+        if (!existing) return { content: [{ type: 'text', text: 'Help topic not found' }], isError: true };
+
+        const updates = [];
+        const vals = [];
+        if (params.topic !== undefined) { updates.push('topic = ?'); vals.push(params.topic.trim()); }
+        if (params.topic_pid !== undefined) {
+          if (params.topic_pid === params.topic_id) return { content: [{ type: 'text', text: 'Topic cannot be its own parent' }], isError: true };
+          updates.push('topic_pid = ?'); vals.push(params.topic_pid || 0);
+        }
+        if (params.dept_id !== undefined) { updates.push('dept_id = ?'); vals.push(params.dept_id || 0); }
+        if (params.priority_id !== undefined) { updates.push('priority_id = ?'); vals.push(params.priority_id || 0); }
+        if (params.sla_id !== undefined) { updates.push('sla_id = ?'); vals.push(params.sla_id || 0); }
+        if (params.ispublic !== undefined) { updates.push('ispublic = ?'); vals.push(params.ispublic ? 1 : 0); }
+        if (params.notes !== undefined) { updates.push('notes = ?'); vals.push(params.notes); }
+        if (updates.length === 0) return { content: [{ type: 'text', text: 'No updates' }], isError: true };
+
+        updates.push('updated = ?'); vals.push(new Date()); vals.push(params.topic_id);
+        await db.query(`UPDATE ${db.table('help_topic')} SET ${updates.join(', ')} WHERE topic_id = ?`, vals);
+        return { content: [{ type: 'text', text: JSON.stringify({ topic_id: params.topic_id, updated: true }) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
+  server.tool(
+    'delete_help_topic',
+    'Delete a help topic. Fails if topic has children or tickets.',
+    { topic_id: z.number() },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        const existing = await db.queryOne(`SELECT topic_id FROM ${db.table('help_topic')} WHERE topic_id = ?`, [params.topic_id]);
+        if (!existing) return { content: [{ type: 'text', text: 'Help topic not found' }], isError: true };
+
+        const children = await db.queryOne(`SELECT COUNT(*) as count FROM ${db.table('help_topic')} WHERE topic_pid = ?`, [params.topic_id]);
+        if (parseInt(children?.count || 0, 10) > 0) return { content: [{ type: 'text', text: 'Cannot delete — topic has child topics' }], isError: true };
+
+        const tickets = await db.queryOne(`SELECT COUNT(*) as count FROM ${db.table('ticket')} WHERE topic_id = ?`, [params.topic_id]);
+        if (parseInt(tickets?.count || 0, 10) > 0) return { content: [{ type: 'text', text: 'Cannot delete — topic has existing tickets' }], isError: true };
+
+        await db.query(`DELETE FROM ${db.table('help_topic')} WHERE topic_id = ?`, [params.topic_id]);
+        return { content: [{ type: 'text', text: JSON.stringify({ topic_id: params.topic_id, deleted: true }) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
   // ── Settings ──
 
   server.tool(
