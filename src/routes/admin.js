@@ -18,6 +18,13 @@ const requireStaffSession = (req, res, next) => {
   next();
 };
 
+const requireAdminSession = (req, res, next) => {
+  if (!req.session?.user || req.session.user.type !== 'staff' || !req.session.user.isAdmin) {
+    return res.redirect('/admin');
+  }
+  next();
+};
+
 router.use(requireStaffSession);
 
 /**
@@ -880,14 +887,17 @@ router.get('/topics', asyncHandler(async (req, res) => {
       ORDER BY ht.sort, ht.topic
     `);
 
+    const createBtn = base.isAdmin ? `<div style="margin-bottom:1em"><a href="/admin/topics/create/edit" class="btn btn-primary">Create Topic</a></div>` : '';
+
     if (topics.length > 0) {
-      topicsHtml = `
+      topicsHtml = createBtn + `
         <table class="data-table">
           <thead>
             <tr>
               <th>Topic</th>
               <th>Department</th>
               <th>Visibility</th>
+              ${base.isAdmin ? '<th>Actions</th>' : ''}
             </tr>
           </thead>
           <tbody>
@@ -896,11 +906,14 @@ router.get('/topics', asyncHandler(async (req, res) => {
                 <td><a href="/admin/topics/${t.topic_id}">${escapeHtml(t.topic)}</a></td>
                 <td>${escapeHtml(t.dept_name || 'Default')}</td>
                 <td>${t.ispublic ? 'Public' : 'Private'}</td>
+                ${base.isAdmin ? `<td><a href="/admin/topics/${t.topic_id}/edit">Edit</a></td>` : ''}
               </tr>
             `).join('')}
           </tbody>
         </table>
       `;
+    } else {
+      topicsHtml = createBtn + topicsHtml;
     }
   } catch (e) {
     console.error('Error loading topics:', e);
@@ -908,6 +921,185 @@ router.get('/topics', asyncHandler(async (req, res) => {
   }
 
   res.send(renderAdminPage('Help Topics', topicsHtml, base, 'topics'));
+}));
+
+/**
+ * Help topic detail (admin)
+ */
+router.get('/topics/:id', asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const { id } = req.params;
+  if (id === 'create') return res.redirect('/admin/topics/create/edit');
+
+  const topic = await db.queryOne(`
+    SELECT ht.*, d.name as dept_name, p.topic as parent_topic,
+           tp.priority_desc as priority_name, sla.name as sla_name
+    FROM ${db.table('help_topic')} ht
+    LEFT JOIN ${db.table('department')} d ON ht.dept_id = d.id
+    LEFT JOIN ${db.table('help_topic')} p ON ht.topic_pid = p.topic_id
+    LEFT JOIN ${db.table('ticket_priority')} tp ON ht.priority_id = tp.priority_id
+    LEFT JOIN ${db.table('sla')} sla ON ht.sla_id = sla.id
+    WHERE ht.topic_id = ?
+  `, [id]);
+  if (!topic) return res.redirect('/admin/topics');
+
+  const childCount = await db.queryOne(`SELECT COUNT(*) as count FROM ${db.table('help_topic')} WHERE topic_pid = ?`, [id]);
+  const ticketCount = await db.queryOne(`SELECT COUNT(*) as count FROM ${db.table('ticket')} WHERE topic_id = ?`, [id]);
+
+  const error = req.query.error;
+  const errorMap = {
+    'has-children': 'Cannot delete — topic has child topics.',
+    'has-tickets': 'Cannot delete — topic has existing tickets.',
+  };
+  const errorHtml = error && errorMap[error] ? `<div class="alert alert-danger">${errorMap[error]}</div>` : '';
+
+  const content = `
+    <h2>${escapeHtml(topic.topic)}</h2>
+    ${errorHtml}
+    <dl class="detail-grid">
+      <dt>Parent</dt><dd>${escapeHtml(topic.parent_topic || 'None')}</dd>
+      <dt>Department</dt><dd>${escapeHtml(topic.dept_name || 'Default')}</dd>
+      <dt>Priority</dt><dd>${escapeHtml(topic.priority_name || 'Default')}</dd>
+      <dt>SLA</dt><dd>${escapeHtml(topic.sla_name || 'None')}</dd>
+      <dt>Visibility</dt><dd>${topic.ispublic ? 'Public' : 'Private'}</dd>
+      <dt>Active</dt><dd>${topic.flags & 1 ? 'Yes' : 'No'}</dd>
+      <dt>Child Topics</dt><dd>${childCount?.count || 0}</dd>
+      <dt>Tickets</dt><dd>${ticketCount?.count || 0}</dd>
+      <dt>Notes</dt><dd>${escapeHtml(topic.notes || '—')}</dd>
+    </dl>
+    ${base.isAdmin ? `
+      <div style="margin-top:1em">
+        <a href="/admin/topics/${topic.topic_id}/edit" class="btn btn-primary">Edit</a>
+        <form method="POST" action="/admin/topics/${topic.topic_id}/delete" style="display:inline" onsubmit="return confirm('Delete this topic?')">
+          <input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">
+          <button type="submit" class="btn btn-danger">Delete</button>
+        </form>
+      </div>
+    ` : ''}
+    <p style="margin-top:1em"><a href="/admin/topics">← Back to topics</a></p>
+  `;
+  res.send(renderAdminPage(topic.topic, content, base, 'topics'));
+}));
+
+/**
+ * Help topic create/edit form (admin)
+ */
+router.get('/topics/:id/edit', requireAdminSession, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const { id } = req.params;
+  const isCreate = id === 'create';
+
+  let topic = {
+    topic_id: null, topic: '', topic_pid: 0, dept_id: 0, priority_id: 0,
+    sla_id: 0, ispublic: 1, noautoresp: 0, flags: 1, notes: ''
+  };
+
+  if (!isCreate) {
+    const existing = await db.queryOne(`SELECT * FROM ${db.table('help_topic')} WHERE topic_id = ?`, [id]);
+    if (!existing) return res.redirect('/admin/topics');
+    topic = existing;
+  }
+
+  const [parents, depts, priorities, slas] = await Promise.all([
+    db.query(`SELECT topic_id, topic FROM ${db.table('help_topic')} ORDER BY topic`),
+    db.query(`SELECT id, name FROM ${db.table('department')} ORDER BY name`),
+    db.query(`SELECT priority_id, priority_desc FROM ${db.table('ticket_priority')} ORDER BY priority_desc`).catch(() => []),
+    db.query(`SELECT id, name FROM ${db.table('sla')} ORDER BY name`).catch(() => []),
+  ]);
+
+  const selectOpts = (items, value, labelField, valueField) =>
+    `<option value="">— None —</option>` + items.map(i =>
+      `<option value="${i[valueField]}" ${String(topic[value]) === String(i[valueField]) ? 'selected' : ''}>${escapeHtml(i[labelField])}</option>`
+    ).join('');
+
+  const action = isCreate ? '/admin/topics/create' : `/admin/topics/${topic.topic_id}/update`;
+  const content = `
+    <h2>${isCreate ? 'Create' : 'Edit'} Help Topic</h2>
+    <form method="POST" action="${action}">
+      <input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">
+      <div class="form-group"><label>Topic Name</label><input type="text" name="topic" value="${escapeHtml(topic.topic)}" maxlength="128" required></div>
+      <div class="form-group"><label>Parent Topic</label><select name="topic_pid">${selectOpts(parents.filter(p => p.topic_id !== topic.topic_id), 'topic_pid', 'topic', 'topic_id')}</select></div>
+      <div class="form-group"><label>Department</label><select name="dept_id">${selectOpts(depts, 'dept_id', 'name', 'id')}</select></div>
+      <div class="form-group"><label>Priority</label><select name="priority_id">${selectOpts(priorities, 'priority_id', 'priority_desc', 'priority_id')}</select></div>
+      <div class="form-group"><label>SLA Plan</label><select name="sla_id">${selectOpts(slas, 'sla_id', 'name', 'id')}</select></div>
+      <div class="form-group"><label><input type="checkbox" name="ispublic" ${topic.ispublic ? 'checked' : ''}> Public</label></div>
+      <div class="form-group"><label><input type="checkbox" name="noautoresp" ${topic.noautoresp ? 'checked' : ''}> Disable auto-response</label></div>
+      <div class="form-group"><label><input type="checkbox" name="isactive" ${(topic.flags & 1) ? 'checked' : ''}> Active</label></div>
+      <div class="form-group"><label>Notes</label><textarea name="notes" rows="4">${escapeHtml(topic.notes || '')}</textarea></div>
+      <button type="submit" class="btn btn-primary">${isCreate ? 'Create' : 'Save'}</button>
+      <a href="/admin/topics" class="btn">Cancel</a>
+      ${!isCreate ? `<button type="submit" formaction="/admin/topics/${topic.topic_id}/delete" class="btn btn-danger" onclick="return confirm('Delete this topic?')">Delete</button>` : ''}
+    </form>
+  `;
+  res.send(renderAdminPage(isCreate ? 'Create Topic' : 'Edit Topic', content, base, 'topics'));
+}));
+
+router.post('/topics/create', requireAdminSession, asyncHandler(async (req, res) => {
+  const { topic, topic_pid, dept_id, priority_id, sla_id, ispublic, noautoresp, isactive, notes } = req.body;
+  if (!topic || !topic.trim()) return res.redirect('/admin/topics/create/edit');
+
+  const parentId = parseInt(topic_pid, 10) || 0;
+  const dup = await db.queryOne(
+    `SELECT topic_id FROM ${db.table('help_topic')} WHERE LOWER(topic) = LOWER(?) AND topic_pid = ?`,
+    [topic.trim(), parentId]
+  );
+  if (dup) return res.redirect('/admin/topics/create/edit?error=duplicate');
+
+  const now = new Date();
+  await db.query(
+    `INSERT INTO ${db.table('help_topic')}
+     (topic_pid, topic, ispublic, noautoresp, flags, sort, dept_id, priority_id, sla_id, staff_id, team_id, notes, created, updated)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, 0, 0, ?, ?, ?)`,
+    [
+      parentId, topic.trim(),
+      ispublic ? 1 : 0, noautoresp ? 1 : 0, isactive ? 1 : 0,
+      parseInt(dept_id, 10) || 0,
+      parseInt(priority_id, 10) || 0,
+      parseInt(sla_id, 10) || 0,
+      notes || null, now, now
+    ]
+  );
+  res.redirect('/admin/topics');
+}));
+
+router.post('/topics/:id/update', requireAdminSession, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { topic, topic_pid, dept_id, priority_id, sla_id, ispublic, noautoresp, isactive, notes } = req.body;
+  const existing = await db.queryOne(`SELECT topic_id FROM ${db.table('help_topic')} WHERE topic_id = ?`, [id]);
+  if (!existing) return res.redirect('/admin/topics');
+
+  const newParent = parseInt(topic_pid, 10) || 0;
+  if (newParent === parseInt(id, 10)) return res.redirect(`/admin/topics/${id}/edit?error=self-parent`);
+
+  await db.query(
+    `UPDATE ${db.table('help_topic')} SET
+       topic = ?, topic_pid = ?, dept_id = ?, priority_id = ?, sla_id = ?,
+       ispublic = ?, noautoresp = ?, flags = ?, notes = ?, updated = ?
+     WHERE topic_id = ?`,
+    [
+      topic.trim(), newParent,
+      parseInt(dept_id, 10) || 0, parseInt(priority_id, 10) || 0, parseInt(sla_id, 10) || 0,
+      ispublic ? 1 : 0, noautoresp ? 1 : 0, isactive ? 1 : 0,
+      notes || null, new Date(), id
+    ]
+  );
+  res.redirect(`/admin/topics/${id}`);
+}));
+
+router.post('/topics/:id/delete', requireAdminSession, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const children = await db.queryOne(
+    `SELECT COUNT(*) as count FROM ${db.table('help_topic')} WHERE topic_pid = ?`, [id]
+  );
+  if (parseInt(children?.count || 0, 10) > 0) return res.redirect(`/admin/topics/${id}?error=has-children`);
+
+  const tickets = await db.queryOne(
+    `SELECT COUNT(*) as count FROM ${db.table('ticket')} WHERE topic_id = ?`, [id]
+  );
+  if (parseInt(tickets?.count || 0, 10) > 0) return res.redirect(`/admin/topics/${id}?error=has-tickets`);
+
+  await db.query(`DELETE FROM ${db.table('help_topic')} WHERE topic_id = ?`, [id]);
+  res.redirect('/admin/topics');
 }));
 
 /**
