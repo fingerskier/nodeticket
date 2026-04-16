@@ -1561,6 +1561,141 @@ router.post('/email-templates/:id/update', requireAdminSession, asyncHandler(asy
 }));
 
 /**
+ * Canned Responses — list
+ */
+router.get('/canned-responses', asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+
+  let where = '';
+  const args = [];
+  if (!base.isAdmin) {
+    const staff = await db.queryOne(`SELECT dept_id FROM ${db.table('staff')} WHERE staff_id = ?`, [base.user.id]);
+    where = ' WHERE cr.dept_id = ? OR cr.dept_id = 0';
+    args.push(staff?.dept_id || 0);
+  }
+
+  const rows = await db.query(
+    `SELECT cr.*, d.name as dept_name
+     FROM ${db.table('canned_response')} cr
+     LEFT JOIN ${db.table('department')} d ON cr.dept_id = d.id
+     ${where}
+     ORDER BY cr.title`, args
+  );
+
+  const createBtn = base.isAdmin ? `<div style="margin-bottom:1em"><a href="/admin/canned-responses/create/edit" class="btn btn-primary">Create Response</a></div>` : '';
+  let html;
+  if (rows.length === 0) {
+    html = createBtn + '<p>No canned responses.</p>';
+  } else {
+    html = createBtn + `
+      <table class="data-table">
+        <thead><tr><th>Title</th><th>Department</th><th>Status</th>${base.isAdmin ? '<th>Actions</th>' : ''}</tr></thead>
+        <tbody>
+          ${rows.map(r => `
+            <tr>
+              <td><a href="/admin/canned-responses/${r.canned_id}/view">${escapeHtml(r.title)}</a></td>
+              <td>${escapeHtml(r.dept_name || 'All Departments')}</td>
+              <td>${r.isenabled ? '<span class="badge badge-success">Enabled</span>' : '<span class="badge badge-danger">Disabled</span>'}</td>
+              ${base.isAdmin ? `<td><a href="/admin/canned-responses/${r.canned_id}/edit">Edit</a></td>` : ''}
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+  res.send(renderAdminPage('Canned Responses', html, base, 'canned-responses'));
+}));
+
+router.get('/canned-responses/:id/view', asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const { id } = req.params;
+  const row = await db.queryOne(
+    `SELECT cr.*, d.name as dept_name FROM ${db.table('canned_response')} cr
+     LEFT JOIN ${db.table('department')} d ON cr.dept_id = d.id WHERE cr.canned_id = ?`, [id]
+  );
+  if (!row) return res.redirect('/admin/canned-responses');
+
+  if (!base.isAdmin) {
+    const staff = await db.queryOne(`SELECT dept_id FROM ${db.table('staff')} WHERE staff_id = ?`, [base.user.id]);
+    const deptId = staff?.dept_id || 0;
+    if (row.dept_id !== 0 && row.dept_id !== deptId) return res.redirect('/admin/canned-responses');
+  }
+
+  const content = `
+    <h2>${escapeHtml(row.title)}</h2>
+    <p><small>${escapeHtml(row.dept_name || 'All Departments')} · ${row.isenabled ? 'Enabled' : 'Disabled'}</small></p>
+    <div class="canned-body" style="padding:1em;border:1px solid #ccc;background:#f9f9f9">${row.response}</div>
+    ${base.isAdmin ? `<div style="margin-top:1em"><a href="/admin/canned-responses/${row.canned_id}/edit" class="btn">Edit</a></div>` : ''}
+    <p style="margin-top:1em"><a href="/admin/canned-responses">← Back</a></p>
+  `;
+  res.send(renderAdminPage(row.title, content, base, 'canned-responses'));
+}));
+
+router.get('/canned-responses/:id/edit', requireAdminSession, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const { id } = req.params;
+  const isCreate = id === 'create';
+
+  let row = { canned_id: null, title: '', response: '', dept_id: 0, isenabled: 1, notes: '' };
+  if (!isCreate) {
+    const existing = await db.queryOne(`SELECT * FROM ${db.table('canned_response')} WHERE canned_id = ?`, [id]);
+    if (!existing) return res.redirect('/admin/canned-responses');
+    row = existing;
+  }
+
+  const depts = await db.query(`SELECT id, name FROM ${db.table('department')} ORDER BY name`);
+  const deptOpts = `<option value="0" ${row.dept_id == 0 ? 'selected' : ''}>All Departments</option>` +
+    depts.map(d => `<option value="${d.id}" ${row.dept_id == d.id ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('');
+
+  const action = isCreate ? '/admin/canned-responses/create' : `/admin/canned-responses/${row.canned_id}/update`;
+  const content = `
+    <h2>${isCreate ? 'Create' : 'Edit'} Canned Response</h2>
+    <form method="POST" action="${action}">
+      <input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">
+      <div class="form-group"><label>Title</label><input type="text" name="title" value="${escapeHtml(row.title)}" maxlength="255" required></div>
+      <div class="form-group"><label>Department</label><select name="dept_id">${deptOpts}</select></div>
+      <div class="form-group"><label><input type="checkbox" name="isenabled" ${row.isenabled ? 'checked' : ''}> Enabled</label></div>
+      <div class="form-group"><label>Response (HTML)</label><textarea name="response" rows="10" required>${escapeHtml(row.response)}</textarea></div>
+      <div class="form-group"><label>Notes</label><textarea name="notes" rows="3">${escapeHtml(row.notes || '')}</textarea></div>
+      <button type="submit" class="btn btn-primary">${isCreate ? 'Create' : 'Save'}</button>
+      <a href="/admin/canned-responses" class="btn">Cancel</a>
+      ${!isCreate ? `<button type="submit" formaction="/admin/canned-responses/${row.canned_id}/delete" class="btn btn-danger" onclick="return confirm('Delete this response?')">Delete</button>` : ''}
+    </form>
+  `;
+  res.send(renderAdminPage(isCreate ? 'Create Response' : 'Edit Response', content, base, 'canned-responses'));
+}));
+
+router.post('/canned-responses/create', requireAdminSession, asyncHandler(async (req, res) => {
+  const { title, response, dept_id, isenabled, notes } = req.body;
+  if (!title || !title.trim() || !response) return res.redirect('/admin/canned-responses/create/edit');
+  const dup = await db.queryOne(`SELECT canned_id FROM ${db.table('canned_response')} WHERE title = ?`, [title.trim()]);
+  if (dup) return res.redirect('/admin/canned-responses/create/edit?error=duplicate');
+  const now = new Date();
+  await db.query(
+    `INSERT INTO ${db.table('canned_response')} (dept_id, isenabled, title, response, lang, notes, created, updated)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [parseInt(dept_id, 10) || 0, isenabled ? 1 : 0, title.trim(), response, 'en_US', notes || null, now, now]
+  );
+  res.redirect('/admin/canned-responses');
+}));
+
+router.post('/canned-responses/:id/update', requireAdminSession, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { title, response, dept_id, isenabled, notes } = req.body;
+  await db.query(
+    `UPDATE ${db.table('canned_response')} SET title = ?, response = ?, dept_id = ?, isenabled = ?, notes = ?, updated = ? WHERE canned_id = ?`,
+    [title.trim(), response, parseInt(dept_id, 10) || 0, isenabled ? 1 : 0, notes || null, new Date(), id]
+  );
+  res.redirect(`/admin/canned-responses/${id}/view`);
+}));
+
+router.post('/canned-responses/:id/delete', requireAdminSession, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  await db.query(`DELETE FROM ${db.table('canned_response')} WHERE canned_id = ?`, [id]);
+  res.redirect('/admin/canned-responses');
+}));
+
+/**
  * FAQ list
  */
 router.get('/faq', asyncHandler(async (req, res) => {
