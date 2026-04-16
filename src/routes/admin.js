@@ -47,7 +47,8 @@ const getAdminData = async (req) => {
   return {
     title: config.helpdesk_title || 'Nodeticket Admin',
     user: req.session?.user || null,
-    isAdmin: req.session?.user?.isAdmin || false
+    isAdmin: req.session?.user?.isAdmin || false,
+    csrfToken: req.csrfToken ? req.csrfToken() : ''
   };
 };
 
@@ -60,6 +61,7 @@ const renderAdminPage = (title, content, base, activeNav = '') => `
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="${base.csrfToken || ''}">
   <title>${title} - Admin - ${base.title}</title>
   <link rel="stylesheet" href="/css/admin.css">
 </head>
@@ -365,6 +367,7 @@ router.get('/tickets', asyncHandler(async (req, res) => {
         <table class="data-table">
           <thead>
             <tr>
+              ${base.isAdmin ? '<th><input type="checkbox" id="select-all"></th>' : ''}
               <th>Ticket #</th>
               <th>Subject</th>
               <th>User</th>
@@ -377,6 +380,7 @@ router.get('/tickets', asyncHandler(async (req, res) => {
           <tbody>
             ${tickets.map(t => `
               <tr class="${t.isoverdue ? 'row-overdue' : ''}">
+                ${base.isAdmin ? `<td><input type="checkbox" class="ticket-select" value="${t.ticket_id}"></td>` : ''}
                 <td><a href="/admin/tickets/${t.ticket_id}">${escapeHtml(t.number)}</a></td>
                 <td>${escapeHtml(t.subject || 'No Subject')}</td>
                 <td>${escapeHtml(t.user_name || 'Unknown')}</td>
@@ -407,6 +411,65 @@ router.get('/tickets', asyncHandler(async (req, res) => {
     ticketsHtml = '<p class="error">Error loading tickets.</p>';
   }
 
+  let staffOpts = '';
+  if (base.isAdmin) {
+    try {
+      const staffRows = await db.query(`SELECT staff_id, firstname, lastname FROM ${db.table('staff')} WHERE isactive = 1 ORDER BY firstname`);
+      staffOpts = staffRows.map(s => `<option value="${s.staff_id}">${escapeHtml((s.firstname || '') + ' ' + (s.lastname || ''))}</option>`).join('');
+    } catch {}
+  }
+
+  const bulkBar = base.isAdmin ? `
+    <div id="bulk-actions" class="bulk-action-bar" style="display:none;position:sticky;top:0;background:#fff;padding:0.5em;border:1px solid #ddd;margin-bottom:1em;z-index:10">
+      <span id="selected-count">0</span> selected
+      <select id="bulk-assign-staff"><option value="">Select staff…</option>${staffOpts}</select>
+      <button type="button" class="btn" onclick="bulkAction('assign')">Assign</button>
+      <button type="button" class="btn" onclick="bulkAction('close')">Close</button>
+      <button type="button" class="btn btn-danger" onclick="if(confirm('Delete selected tickets?')) bulkAction('delete')">Delete</button>
+    </div>
+  ` : '';
+
+  const bulkScript = base.isAdmin ? `
+    <script>
+      (function() {
+        const selAll = document.getElementById('select-all');
+        const bar = document.getElementById('bulk-actions');
+        const count = document.getElementById('selected-count');
+        function checks() { return document.querySelectorAll('.ticket-select'); }
+        function update() {
+          const sel = [...checks()].filter(c => c.checked);
+          count.textContent = sel.length;
+          bar.style.display = sel.length > 0 ? 'block' : 'none';
+        }
+        if (selAll) selAll.addEventListener('change', () => {
+          checks().forEach(c => c.checked = selAll.checked);
+          update();
+        });
+        checks().forEach(c => c.addEventListener('change', update));
+        window.bulkAction = function(action) {
+          const ids = [...checks()].filter(c => c.checked).map(c => parseInt(c.value, 10));
+          if (ids.length === 0) return;
+          const data = {};
+          if (action === 'assign') {
+            const staffVal = document.getElementById('bulk-assign-staff').value;
+            if (!staffVal) { alert('Select a staff member'); return; }
+            data.staff_id = parseInt(staffVal, 10);
+          }
+          const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
+          fetch('/api/v1/tickets/bulk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
+            credentials: 'same-origin',
+            body: JSON.stringify({ action, ticketIds: ids, data })
+          }).then(r => r.json()).then(result => {
+            if (result.success) location.reload();
+            else alert(result.message || 'Error');
+          }).catch(e => alert('Error: ' + e.message));
+        };
+      })();
+    </script>
+  ` : '';
+
   const content = `
     <div class="filters">
       <form method="GET" class="filter-form">
@@ -419,8 +482,10 @@ router.get('/tickets', asyncHandler(async (req, res) => {
         <button type="submit" class="btn">Filter</button>
       </form>
     </div>
+    ${bulkBar}
     ${ticketsHtml}
     ${pagination}
+    ${bulkScript}
   `;
 
   res.send(renderAdminPage('Tickets', content, base, 'tickets'));
