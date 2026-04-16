@@ -700,6 +700,117 @@ const registerAdminTools = (server, userAuth) => {
     }
   );
 
+  // ── Filters ──
+
+  const filterController = require('../../controllers/filterController');
+
+  server.tool(
+    'list_filters',
+    'List all ticket filters ordered by execorder.',
+    {},
+    async () => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        const rows = await db.query(
+          `SELECT f.*,
+                  (SELECT COUNT(*) FROM ${db.table('filter_rule')} fr WHERE fr.filter_id = f.id) as rule_count,
+                  (SELECT COUNT(*) FROM ${db.table('filter_action')} fa WHERE fa.filter_id = f.id) as action_count
+           FROM ${db.table('filter')} f ORDER BY f.execorder, f.id`
+        );
+        return { content: [{ type: 'text', text: JSON.stringify(rows.map(f => ({
+          id: f.id, name: f.name, execorder: f.execorder, isactive: !!f.isactive,
+          target: f.target, rule_count: parseInt(f.rule_count || 0, 10),
+          action_count: parseInt(f.action_count || 0, 10),
+        })), null, 2) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
+  server.tool(
+    'get_filter',
+    'Get a filter with all its rules and actions.',
+    { filter_id: z.number() },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        const filter = await db.queryOne(`SELECT * FROM ${db.table('filter')} WHERE id = ?`, [params.filter_id]);
+        if (!filter) return { content: [{ type: 'text', text: 'Filter not found' }], isError: true };
+        const rules = await db.query(`SELECT * FROM ${db.table('filter_rule')} WHERE filter_id = ? ORDER BY id`, [params.filter_id]);
+        const actions = await db.query(`SELECT * FROM ${db.table('filter_action')} WHERE filter_id = ? ORDER BY sort, id`, [params.filter_id]);
+        return { content: [{ type: 'text', text: JSON.stringify({ ...filter, rules, actions }, null, 2) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
+  const ruleSchema = z.object({ what: z.string(), how: z.string(), val: z.string() });
+  const actionSchema = z.object({ type: z.string(), configuration: z.string().describe('JSON string') });
+
+  server.tool(
+    'create_filter',
+    'Create a ticket filter with rules and actions.',
+    {
+      name: z.string().max(32),
+      isactive: z.boolean().optional(),
+      target: z.enum(['Any', 'Web', 'Email', 'API']).optional(),
+      match_all_rules: z.boolean().optional(),
+      stop_onmatch: z.boolean().optional(),
+      rules: z.array(ruleSchema),
+      actions: z.array(actionSchema),
+      notes: z.string().optional(),
+    },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        const fakeReq = { body: params };
+        const fakeRes = { status: (c) => ({ json: (d) => ({ statusCode: c, body: d }) }), json: (d) => d };
+        let out;
+        await filterController.create(fakeReq, { status: () => ({ json: (d) => { out = d; } }) });
+        return { content: [{ type: 'text', text: JSON.stringify(out?.data || { success: true }) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
+  server.tool(
+    'update_filter',
+    'Update a ticket filter with rules and actions.',
+    {
+      filter_id: z.number(),
+      name: z.string().max(32).optional(),
+      isactive: z.boolean().optional(),
+      target: z.enum(['Any', 'Web', 'Email', 'API']).optional(),
+      match_all_rules: z.boolean().optional(),
+      stop_onmatch: z.boolean().optional(),
+      rules: z.array(ruleSchema).optional(),
+      actions: z.array(actionSchema).optional(),
+      notes: z.string().optional(),
+    },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        const { filter_id, ...body } = params;
+        const fakeReq = { params: { id: filter_id }, body };
+        let out;
+        await filterController.update(fakeReq, { json: (d) => { out = d; } });
+        return { content: [{ type: 'text', text: JSON.stringify(out || { filter_id, updated: true }) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
+  server.tool(
+    'delete_filter',
+    'Delete a filter and its rules and actions.',
+    { filter_id: z.number() },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        const fakeReq = { params: { id: params.filter_id } };
+        let out;
+        await filterController.remove(fakeReq, { json: (d) => { out = d; } });
+        return { content: [{ type: 'text', text: JSON.stringify(out || { filter_id: params.filter_id, deleted: true }) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
   // ── Settings ──
 
   server.tool(
