@@ -811,6 +811,34 @@ const registerAdminTools = (server, userAuth) => {
     }
   );
 
+  // ── Bulk Ticket Ops ──
+
+  server.tool(
+    'bulk_update_tickets',
+    'Bulk action on tickets: assign (staff_id or team_id), close, or delete. Max 100 tickets.',
+    {
+      action: z.enum(['assign', 'close', 'delete']),
+      ticketIds: z.array(z.number()).min(1).max(100),
+      data: z.object({
+        staff_id: z.number().optional(),
+        team_id: z.number().optional(),
+      }).optional(),
+    },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        const ticketController = require('../../controllers/ticketController');
+        const fakeReq = {
+          body: params,
+          auth: userAuth || { id: 0, name: 'MCP', type: 'staff', isAdmin: true },
+        };
+        let out;
+        await ticketController.bulkAction(fakeReq, { json: (d) => { out = d; } });
+        return { content: [{ type: 'text', text: JSON.stringify(out || { success: true }) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
   // ── Settings ──
 
   server.tool(
