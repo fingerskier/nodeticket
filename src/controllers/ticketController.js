@@ -223,6 +223,99 @@ const createLegacy = async (req, res) => {
   throw ApiError.badRequest('Write operations not yet implemented');
 };
 
+/**
+ * Bulk action on tickets (admin): assign, close, delete. Max 100 tickets per call.
+ */
+const bulkAction = async (req, res) => {
+  const { action, ticketIds, data } = req.body;
+
+  if (!action || !['assign', 'close', 'delete'].includes(action)) {
+    throw ApiError.badRequest('Invalid action. Must be: assign, close, delete');
+  }
+  if (!Array.isArray(ticketIds) || ticketIds.length === 0) {
+    throw ApiError.badRequest('No tickets selected');
+  }
+  if (ticketIds.length > 100) {
+    throw ApiError.badRequest('Maximum 100 tickets per bulk operation');
+  }
+
+  const ids = ticketIds.map(i => parseInt(i, 10)).filter(n => !isNaN(n));
+  if (ids.length !== ticketIds.length) throw ApiError.badRequest('Invalid ticket ID');
+
+  const staffId = req.auth?.id;
+  const staffName = req.auth?.name || 'System';
+
+  await db.transaction(async (txQuery, txQueryOne) => {
+    const placeholders = ids.map(() => '?').join(',');
+
+    if (action === 'assign') {
+      if (!data?.staff_id && !data?.team_id) {
+        throw ApiError.badRequest('Must specify staff_id or team_id for assign');
+      }
+      const updates = [];
+      const params = [];
+      if (data.staff_id) { updates.push('staff_id = ?'); params.push(data.staff_id); }
+      if (data.team_id) { updates.push('team_id = ?'); params.push(data.team_id); }
+      updates.push('updated = ?');
+      params.push(new Date());
+
+      await txQuery(
+        `UPDATE ${db.table('ticket')} SET ${updates.join(', ')} WHERE ticket_id IN (${placeholders})`,
+        [...params, ...ids]
+      );
+    }
+
+    if (action === 'close') {
+      const closedStatus = await txQueryOne(
+        `SELECT id FROM ${db.table('ticket_status')} WHERE state = 'closed' LIMIT 1`
+      );
+      if (!closedStatus) throw ApiError.badRequest('No closed status defined');
+      const now = new Date();
+      await txQuery(
+        `UPDATE ${db.table('ticket')} SET status_id = ?, closed = ?, updated = ? WHERE ticket_id IN (${placeholders})`,
+        [closedStatus.id, now, now, ...ids]
+      );
+    }
+
+    if (action === 'delete') {
+      const deletedStatus = await txQueryOne(
+        `SELECT id FROM ${db.table('ticket_status')} WHERE state = 'deleted' LIMIT 1`
+      );
+      if (!deletedStatus) throw ApiError.badRequest('No deleted status defined');
+      await txQuery(
+        `UPDATE ${db.table('ticket')} SET status_id = ?, updated = ? WHERE ticket_id IN (${placeholders})`,
+        [deletedStatus.id, new Date(), ...ids]
+      );
+    }
+
+    // Audit trail — batch insert thread_event rows
+    const eventName = `bulk_${action}`;
+    const event = await txQueryOne(
+      `SELECT id FROM ${db.table('event')} WHERE name = ?`,
+      [eventName]
+    );
+
+    if (event) {
+      const threads = await txQuery(
+        `SELECT id, object_id FROM ${db.table('thread')} WHERE object_id IN (${placeholders}) AND object_type = 'T'`,
+        ids
+      );
+
+      if (threads.length > 0) {
+        const now = new Date();
+        const values = threads.map(() => `(?, ?, ?, ?, ?, 'S', ?)`).join(', ');
+        const params = threads.flatMap(t => [t.id, event.id, staffId, staffName, staffId, now]);
+        await txQuery(
+          `INSERT INTO ${db.table('thread_event')} (thread_id, event_id, staff_id, username, uid, uid_type, timestamp) VALUES ${values}`,
+          params
+        );
+      }
+    }
+  });
+
+  res.json({ success: true, data: { affected: ids.length, action } });
+};
+
 module.exports = {
   list,
   get,
@@ -234,4 +327,5 @@ module.exports = {
   addNote,
   merge,
   createLegacy,
+  bulkAction,
 };
