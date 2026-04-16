@@ -430,7 +430,7 @@ const views = {
                   <strong>${e.type === 'M' ? 'You' : escapeHtml(e.poster || 'Support')}</strong>
                   <span class="entry-date">${formatDate(e.created)}</span>
                 </div>
-                <div class="entry-body">${e.body}</div>
+                <div class="entry-body">${escapeHtml(e.body)}</div>
               </div>
             `).join('')}
           </div>

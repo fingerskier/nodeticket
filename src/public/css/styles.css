@@ -353,6 +353,7 @@ a:hover {
 
 .entry-body {
   line-height: 1.6;
+  white-space: pre-wrap;
 }
 
 /* FAQ */
