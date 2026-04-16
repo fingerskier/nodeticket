@@ -7,6 +7,7 @@
 
 const { z } = require('zod');
 const { getSdk } = require('../../lib/sdk');
+const db = require('../../lib/db');
 
 const registerAdminTools = (server, userAuth) => {
 
@@ -321,6 +322,43 @@ const registerAdminTools = (server, userAuth) => {
       } catch (err) {
         return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
       }
+    }
+  );
+
+  // ── Settings ──
+
+  server.tool(
+    'get_settings',
+    'Get all system settings with current values.',
+    {},
+    async () => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        const rows = await db.query(`SELECT \`key\`, value FROM ${db.table('config')} ORDER BY \`key\``);
+        const settings = {};
+        for (const row of rows) settings[row.key] = row.value;
+        return { content: [{ type: 'text', text: JSON.stringify(settings, null, 2) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
+  server.tool(
+    'update_settings',
+    'Update system settings. Pass key-value pairs.',
+    { settings: z.record(z.string(), z.string()).describe('Object of setting key-value pairs, e.g. {"helpdesk_title": "My Helpdesk"}') },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        for (const [key, value] of Object.entries(params.settings)) {
+          const existing = await db.queryOne(`SELECT id FROM ${db.table('config')} WHERE \`key\` = ?`, [key]);
+          if (existing) {
+            await db.query(`UPDATE ${db.table('config')} SET value = ?, updated = ? WHERE \`key\` = ?`, [value, new Date(), key]);
+          } else {
+            await db.query(`INSERT INTO ${db.table('config')} (\`namespace\`, \`key\`, value, updated) VALUES (?, ?, ?, ?)`, ['core', key, value, new Date()]);
+          }
+        }
+        return { content: [{ type: 'text', text: JSON.stringify({ updated: Object.keys(params.settings).length }) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
     }
   );
 };
