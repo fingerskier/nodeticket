@@ -952,6 +952,77 @@ router.get('/sla', asyncHandler(async (req, res) => {
 }));
 
 /**
+ * Settings page (admin only)
+ */
+router.get('/settings', asyncHandler(async (req, res) => {
+  if (!req.session?.user?.isAdmin) return res.redirect('/admin');
+  const base = await getAdminData(req);
+  const { SETTINGS_GROUPS } = require('../controllers/settingsController');
+
+  const rows = await db.query(`SELECT \`key\`, value FROM ${db.table('config')}`);
+  const configMap = {};
+  for (const row of rows) configMap[row.key] = row.value;
+
+  const fkOptions = {};
+  for (const group of Object.values(SETTINGS_GROUPS)) {
+    for (const [key, def] of Object.entries(group.keys)) {
+      if (def.type === 'fk') {
+        try {
+          fkOptions[key] = await db.query(
+            `SELECT ${def.valueCol} as value, ${def.labelCol} as label FROM ${db.table(def.table)} ORDER BY ${def.labelCol}`
+          );
+        } catch (e) {
+          fkOptions[key] = [];
+        }
+      }
+    }
+  }
+
+  let formHtml = '';
+  for (const group of Object.values(SETTINGS_GROUPS)) {
+    formHtml += `<h3>${escapeHtml(group.label)}</h3>`;
+    for (const [key, def] of Object.entries(group.keys)) {
+      const val = configMap[key] || '';
+      if (def.type === 'text') {
+        formHtml += `<div class="form-group"><label>${escapeHtml(def.label)}</label><input type="text" name="${key}" value="${escapeHtml(val)}"></div>`;
+      } else if (def.type === 'number') {
+        formHtml += `<div class="form-group"><label>${escapeHtml(def.label)}</label><input type="number" name="${key}" value="${escapeHtml(val)}" min="0"></div>`;
+      } else if (def.type === 'toggle') {
+        formHtml += `<div class="form-group"><label><input type="checkbox" name="${key}" ${val === '1' ? 'checked' : ''}> ${escapeHtml(def.label)}</label></div>`;
+      } else if (def.type === 'fk') {
+        const opts = (fkOptions[key] || []).map(o => `<option value="${o.value}" ${String(val) === String(o.value) ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('');
+        formHtml += `<div class="form-group"><label>${escapeHtml(def.label)}</label><select name="${key}"><option value="">— None —</option>${opts}</select></div>`;
+      }
+    }
+  }
+
+  const saved = req.query.saved ? '<div class="alert alert-success">Settings saved.</div>' : '';
+  const content = `<h2>System Settings</h2>${saved}<form method="POST" action="/admin/settings/update"><input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">${formHtml}<button type="submit" class="btn btn-primary">Save Settings</button></form>`;
+  res.send(renderAdminPage('Settings', content, base, 'settings'));
+}));
+
+router.post('/settings/update', asyncHandler(async (req, res) => {
+  if (!req.session?.user?.isAdmin) return res.redirect('/admin');
+  const { SETTINGS_GROUPS } = require('../controllers/settingsController');
+
+  for (const group of Object.values(SETTINGS_GROUPS)) {
+    for (const [key, def] of Object.entries(group.keys)) {
+      let value = req.body[key];
+      if (def.type === 'toggle') value = value ? '1' : '0';
+      if (value === undefined || value === null) continue;
+
+      const existing = await db.queryOne(`SELECT id FROM ${db.table('config')} WHERE \`key\` = ?`, [key]);
+      if (existing) {
+        await db.query(`UPDATE ${db.table('config')} SET value = ?, updated = ? WHERE \`key\` = ?`, [String(value), new Date(), key]);
+      } else {
+        await db.query(`INSERT INTO ${db.table('config')} (\`namespace\`, \`key\`, value, updated) VALUES (?, ?, ?, ?)`, ['core', key, String(value), new Date()]);
+      }
+    }
+  }
+  res.redirect('/admin/settings?saved=1');
+}));
+
+/**
  * FAQ list
  */
 router.get('/faq', asyncHandler(async (req, res) => {
