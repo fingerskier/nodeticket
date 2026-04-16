@@ -1696,6 +1696,310 @@ router.post('/canned-responses/:id/delete', requireAdminSession, asyncHandler(as
 }));
 
 /**
+ * Filters — list (admin only)
+ */
+router.get('/filters', requireAdminSession, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const rows = await db.query(
+    `SELECT f.*,
+            (SELECT COUNT(*) FROM ${db.table('filter_rule')} fr WHERE fr.filter_id = f.id) as rule_count,
+            (SELECT COUNT(*) FROM ${db.table('filter_action')} fa WHERE fa.filter_id = f.id) as action_count
+     FROM ${db.table('filter')} f ORDER BY f.execorder, f.id`
+  );
+  const createBtn = `<div style="margin-bottom:1em"><a href="/admin/filters/create/edit" class="btn btn-primary">Create Filter</a></div>`;
+  let html;
+  if (rows.length === 0) {
+    html = createBtn + '<p>No filters.</p>';
+  } else {
+    html = createBtn + `
+      <table class="data-table">
+        <thead><tr><th>Order</th><th>Name</th><th>Active</th><th>Target</th><th>Rules</th><th>Actions</th><th></th></tr></thead>
+        <tbody>
+          ${rows.map(f => `
+            <tr>
+              <td>${f.execorder}</td>
+              <td><a href="/admin/filters/${f.id}/edit">${escapeHtml(f.name)}</a></td>
+              <td>${f.isactive ? '<span class="badge badge-success">Active</span>' : '<span class="badge badge-danger">Off</span>'}</td>
+              <td>${escapeHtml(f.target)}</td>
+              <td>${f.rule_count}</td>
+              <td>${f.action_count}</td>
+              <td><a href="/admin/filters/${f.id}/edit">Edit</a></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+  res.send(renderAdminPage('Filters', html, base, 'filters'));
+}));
+
+router.get('/filters/:id/edit', requireAdminSession, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const { id } = req.params;
+  const isCreate = id === 'create';
+
+  let filter = { id: null, name: '', isactive: 1, target: 'Any', match_all_rules: 0, stop_onmatch: 0, notes: '' };
+  let rules = [];
+  let actions = [];
+
+  if (!isCreate) {
+    const row = await db.queryOne(`SELECT * FROM ${db.table('filter')} WHERE id = ?`, [id]);
+    if (!row) return res.redirect('/admin/filters');
+    filter = row;
+    rules = await db.query(`SELECT * FROM ${db.table('filter_rule')} WHERE filter_id = ? ORDER BY id`, [id]);
+    actions = await db.query(`SELECT * FROM ${db.table('filter_action')} WHERE filter_id = ? ORDER BY sort, id`, [id]);
+  }
+
+  // Build action-type -> config map
+  const actionMap = {};
+  for (const a of actions) {
+    try { actionMap[a.type] = JSON.parse(a.configuration || '{}'); } catch {}
+  }
+
+  const [depts, priorities, slas, statuses, staffs, teams, topics] = await Promise.all([
+    db.query(`SELECT id, name FROM ${db.table('department')} ORDER BY name`),
+    db.query(`SELECT priority_id, priority_desc FROM ${db.table('ticket_priority')} ORDER BY priority_desc`).catch(() => []),
+    db.query(`SELECT id, name FROM ${db.table('sla')} ORDER BY name`).catch(() => []),
+    db.query(`SELECT id, name FROM ${db.table('ticket_status')} ORDER BY name`).catch(() => []),
+    db.query(`SELECT staff_id, firstname, lastname FROM ${db.table('staff')} WHERE isactive = 1 ORDER BY firstname`).catch(() => []),
+    db.query(`SELECT team_id, name FROM ${db.table('team')} ORDER BY name`).catch(() => []),
+    db.query(`SELECT topic_id, topic FROM ${db.table('help_topic')} ORDER BY topic`).catch(() => []),
+  ]);
+
+  const optHtml = (items, labelField, valueField, selected) =>
+    `<option value="">—</option>` + items.map(i =>
+      `<option value="${i[valueField]}" ${String(selected) === String(i[valueField]) ? 'selected' : ''}>${escapeHtml(i[labelField] || '')}</option>`
+    ).join('');
+
+  const rulesJson = JSON.stringify(rules.map(r => ({ what: r.what, how: r.how, val: r.val })));
+  const action = isCreate ? '/admin/filters/create' : `/admin/filters/${filter.id}/update`;
+
+  const content = `
+    <h2>${isCreate ? 'Create' : 'Edit'} Filter</h2>
+    <form method="POST" action="${action}" id="filter-form">
+      <input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">
+      <div class="form-group"><label>Name</label><input type="text" name="name" value="${escapeHtml(filter.name)}" maxlength="32" required></div>
+      <div class="form-group"><label><input type="checkbox" name="isactive" ${filter.isactive ? 'checked' : ''}> Active</label></div>
+      <div class="form-group"><label>Target</label>
+        <select name="target">
+          ${['Any','Web','Email','API'].map(t => `<option value="${t}" ${filter.target === t ? 'selected' : ''}>${t}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Match</label>
+        <label><input type="radio" name="match_all_rules" value="1" ${filter.match_all_rules ? 'checked' : ''}> All rules</label>
+        <label><input type="radio" name="match_all_rules" value="0" ${!filter.match_all_rules ? 'checked' : ''}> Any rule</label>
+      </div>
+      <div class="form-group"><label><input type="checkbox" name="stop_onmatch" ${filter.stop_onmatch ? 'checked' : ''}> Stop on match</label></div>
+
+      <h3>Rules</h3>
+      <div id="rules-container"></div>
+      <button type="button" class="btn" onclick="addRule()">+ Add Rule</button>
+      <input type="hidden" name="rules" id="rules-json">
+
+      <h3>Actions</h3>
+      <div class="action-row">
+        <label><input type="checkbox" name="act_set_dept" ${actionMap.set_dept ? 'checked' : ''}> Set Department</label>
+        <select name="act_set_dept_val">${optHtml(depts, 'name', 'id', actionMap.set_dept?.dept_id)}</select>
+      </div>
+      <div class="action-row">
+        <label><input type="checkbox" name="act_set_priority" ${actionMap.set_priority ? 'checked' : ''}> Set Priority</label>
+        <select name="act_set_priority_val">${optHtml(priorities, 'priority_desc', 'priority_id', actionMap.set_priority?.priority_id)}</select>
+      </div>
+      <div class="action-row">
+        <label><input type="checkbox" name="act_set_sla" ${actionMap.set_sla ? 'checked' : ''}> Set SLA</label>
+        <select name="act_set_sla_val">${optHtml(slas, 'name', 'id', actionMap.set_sla?.sla_id)}</select>
+      </div>
+      <div class="action-row">
+        <label><input type="checkbox" name="act_set_status" ${actionMap.set_status ? 'checked' : ''}> Set Status</label>
+        <select name="act_set_status_val">${optHtml(statuses, 'name', 'id', actionMap.set_status?.status_id)}</select>
+      </div>
+      <div class="action-row">
+        <label><input type="checkbox" name="act_assign_staff" ${actionMap.assign_staff ? 'checked' : ''}> Assign Staff</label>
+        <select name="act_assign_staff_val">${['<option value="">—</option>', ...staffs.map(s => `<option value="${s.staff_id}" ${String(actionMap.assign_staff?.staff_id) === String(s.staff_id) ? 'selected' : ''}>${escapeHtml((s.firstname||'') + ' ' + (s.lastname||''))}</option>`)].join('')}</select>
+      </div>
+      <div class="action-row">
+        <label><input type="checkbox" name="act_assign_team" ${actionMap.assign_team ? 'checked' : ''}> Assign Team</label>
+        <select name="act_assign_team_val">${optHtml(teams, 'name', 'team_id', actionMap.assign_team?.team_id)}</select>
+      </div>
+      <div class="action-row">
+        <label><input type="checkbox" name="act_set_topic" ${actionMap.set_topic ? 'checked' : ''}> Set Topic</label>
+        <select name="act_set_topic_val">${optHtml(topics, 'topic', 'topic_id', actionMap.set_topic?.topic_id)}</select>
+      </div>
+      <div class="action-row">
+        <label><input type="checkbox" name="act_reject" ${actionMap.reject ? 'checked' : ''}> Reject</label>
+        <input type="text" name="act_reject_val" placeholder="Rejection message" value="${escapeHtml(actionMap.reject?.message || '')}">
+      </div>
+
+      <div class="form-group"><label>Notes</label><textarea name="notes" rows="3">${escapeHtml(filter.notes || '')}</textarea></div>
+      <button type="submit" class="btn btn-primary">${isCreate ? 'Create' : 'Save'}</button>
+      <a href="/admin/filters" class="btn">Cancel</a>
+      ${!isCreate ? `<button type="submit" formaction="/admin/filters/${filter.id}/delete" class="btn btn-danger" onclick="return confirm('Delete this filter?')">Delete</button>` : ''}
+    </form>
+    <script>
+      const RULES = ${rulesJson};
+      const WHAT_OPTIONS = ['subject','body','email','dept_id','topic_id','priority_id','source'];
+      const HOW_OPTIONS = ['equal','not_equal','contains','dn_contain','starts','ends','match','not_match'];
+      function renderRules() {
+        const c = document.getElementById('rules-container');
+        c.innerHTML = RULES.map((r, i) => \`
+          <div class="rule-row" data-i="\${i}">
+            <select data-field="what">\${WHAT_OPTIONS.map(w => '<option value="' + w + '"' + (w === r.what ? ' selected' : '') + '>' + w + '</option>').join('')}</select>
+            <select data-field="how">\${HOW_OPTIONS.map(h => '<option value="' + h + '"' + (h === r.how ? ' selected' : '') + '>' + h + '</option>').join('')}</select>
+            <input type="text" data-field="val" value="\${String(r.val || '').replace(/"/g, '&quot;')}" maxlength="255">
+            <button type="button" onclick="removeRule(\${i})">×</button>
+          </div>
+        \`).join('');
+        c.querySelectorAll('.rule-row').forEach(el => {
+          el.querySelectorAll('[data-field]').forEach(f => {
+            f.addEventListener('change', () => {
+              const i = parseInt(el.dataset.i, 10);
+              RULES[i][f.dataset.field] = f.value;
+            });
+          });
+        });
+      }
+      function addRule() { RULES.push({ what: 'subject', how: 'contains', val: '' }); renderRules(); }
+      function removeRule(i) { RULES.splice(i, 1); renderRules(); }
+      document.getElementById('filter-form').addEventListener('submit', () => {
+        // sync values before serializing
+        document.querySelectorAll('#rules-container .rule-row').forEach(el => {
+          const i = parseInt(el.dataset.i, 10);
+          el.querySelectorAll('[data-field]').forEach(f => { RULES[i][f.dataset.field] = f.value; });
+        });
+        document.getElementById('rules-json').value = JSON.stringify(RULES);
+      });
+      renderRules();
+    </script>
+  `;
+  res.send(renderAdminPage(isCreate ? 'Create Filter' : 'Edit Filter', content, base, 'filters'));
+}));
+
+const parseFilterActions = (body) => {
+  const actions = [];
+  const map = [
+    ['act_set_dept', 'set_dept', 'dept_id', 'act_set_dept_val'],
+    ['act_set_priority', 'set_priority', 'priority_id', 'act_set_priority_val'],
+    ['act_set_sla', 'set_sla', 'sla_id', 'act_set_sla_val'],
+    ['act_set_status', 'set_status', 'status_id', 'act_set_status_val'],
+    ['act_assign_staff', 'assign_staff', 'staff_id', 'act_assign_staff_val'],
+    ['act_assign_team', 'assign_team', 'team_id', 'act_assign_team_val'],
+    ['act_set_topic', 'set_topic', 'topic_id', 'act_set_topic_val'],
+  ];
+  for (const [checkField, type, key, valField] of map) {
+    if (body[checkField] && body[valField]) {
+      actions.push({ type, configuration: JSON.stringify({ [key]: parseInt(body[valField], 10) }) });
+    }
+  }
+  if (body.act_reject) {
+    actions.push({ type: 'reject', configuration: JSON.stringify({ message: body.act_reject_val || 'Rejected' }) });
+  }
+  return actions;
+};
+
+router.post('/filters/create', requireAdminSession, asyncHandler(async (req, res) => {
+  const { name, isactive, target, match_all_rules, stop_onmatch, notes } = req.body;
+  let rules = [];
+  try { rules = JSON.parse(req.body.rules || '[]'); } catch {}
+  const actions = parseFilterActions(req.body);
+
+  // Validate regex rules
+  for (const r of rules) {
+    if ((r.how === 'match' || r.how === 'not_match')) {
+      try { new RegExp(r.val); } catch { return res.redirect('/admin/filters/create/edit?error=bad-regex'); }
+    }
+  }
+
+  const now = new Date();
+  await db.transaction(async (txQuery, txQueryOne) => {
+    const maxRow = await txQueryOne(`SELECT MAX(execorder) as max FROM ${db.table('filter')}`);
+    const nextOrder = (parseInt(maxRow?.max || 0, 10)) + 1;
+
+    const fr = await txQuery(
+      `INSERT INTO ${db.table('filter')}
+       (execorder, isactive, flags, status, match_all_rules, stop_onmatch, target, email_id, name, notes, created, updated)
+       VALUES (?, ?, 0, 0, ?, ?, ?, 0, ?, ?, ?, ?)`,
+      [nextOrder, isactive ? 1 : 0,
+       String(match_all_rules) === '1' ? 1 : 0, stop_onmatch ? 1 : 0,
+       target || 'Any', name.trim(), notes || null, now, now]
+    );
+    const filterId = fr?.insertId || fr?.lastInsertId || fr?.id;
+
+    for (const r of rules) {
+      if (!r.what || !r.how || r.val === undefined) continue;
+      await txQuery(
+        `INSERT INTO ${db.table('filter_rule')} (filter_id, what, how, val, isactive, notes, created, updated)
+         VALUES (?, ?, ?, ?, 1, '', ?, ?)`,
+        [filterId, r.what, r.how, r.val, now, now]
+      );
+    }
+
+    for (let i = 0; i < actions.length; i++) {
+      await txQuery(
+        `INSERT INTO ${db.table('filter_action')} (filter_id, sort, type, configuration, updated)
+         VALUES (?, ?, ?, ?, ?)`,
+        [filterId, i, actions[i].type, actions[i].configuration, now]
+      );
+    }
+  });
+  res.redirect('/admin/filters');
+}));
+
+router.post('/filters/:id/update', requireAdminSession, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { name, isactive, target, match_all_rules, stop_onmatch, notes } = req.body;
+  let rules = [];
+  try { rules = JSON.parse(req.body.rules || '[]'); } catch {}
+  const actions = parseFilterActions(req.body);
+
+  for (const r of rules) {
+    if ((r.how === 'match' || r.how === 'not_match')) {
+      try { new RegExp(r.val); } catch { return res.redirect(`/admin/filters/${id}/edit?error=bad-regex`); }
+    }
+  }
+
+  const now = new Date();
+  await db.transaction(async (txQuery) => {
+    await txQuery(
+      `UPDATE ${db.table('filter')} SET
+         name = ?, isactive = ?, target = ?, match_all_rules = ?, stop_onmatch = ?, notes = ?, updated = ?
+       WHERE id = ?`,
+      [name.trim(), isactive ? 1 : 0, target || 'Any',
+       String(match_all_rules) === '1' ? 1 : 0, stop_onmatch ? 1 : 0,
+       notes || null, now, id]
+    );
+    await txQuery(`DELETE FROM ${db.table('filter_rule')} WHERE filter_id = ?`, [id]);
+    for (const r of rules) {
+      if (!r.what || !r.how || r.val === undefined) continue;
+      await txQuery(
+        `INSERT INTO ${db.table('filter_rule')} (filter_id, what, how, val, isactive, notes, created, updated)
+         VALUES (?, ?, ?, ?, 1, '', ?, ?)`,
+        [id, r.what, r.how, r.val, now, now]
+      );
+    }
+    await txQuery(`DELETE FROM ${db.table('filter_action')} WHERE filter_id = ?`, [id]);
+    for (let i = 0; i < actions.length; i++) {
+      await txQuery(
+        `INSERT INTO ${db.table('filter_action')} (filter_id, sort, type, configuration, updated)
+         VALUES (?, ?, ?, ?, ?)`,
+        [id, i, actions[i].type, actions[i].configuration, now]
+      );
+    }
+  });
+  res.redirect('/admin/filters');
+}));
+
+router.post('/filters/:id/delete', requireAdminSession, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  await db.transaction(async (txQuery) => {
+    await txQuery(`DELETE FROM ${db.table('filter_action')} WHERE filter_id = ?`, [id]);
+    await txQuery(`DELETE FROM ${db.table('filter_rule')} WHERE filter_id = ?`, [id]);
+    await txQuery(`DELETE FROM ${db.table('filter')} WHERE id = ?`, [id]);
+  });
+  res.redirect('/admin/filters');
+}));
+
+/**
  * FAQ list
  */
 router.get('/faq', asyncHandler(async (req, res) => {
