@@ -426,6 +426,96 @@ const registerAdminTools = (server, userAuth) => {
     }
   );
 
+  // ── SLA Plans ──
+
+  server.tool(
+    'create_sla',
+    'Create an SLA plan.',
+    {
+      name: z.string().describe('SLA name (1-64 chars)'),
+      grace_period: z.number().optional().describe('Grace period in hours'),
+      flags: z.number().optional().describe('Bitmask: 1=active, 2=escalate, 4=noalerts, 8=transient'),
+      notes: z.string().optional(),
+    },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        const sdk = getSdk();
+        const dup = await sdk.data.sla.find({ where: { name: params.name.trim() } });
+        if (dup.length > 0) return { content: [{ type: 'text', text: 'SLA name already exists' }], isError: true };
+        const now = new Date();
+        const result = await sdk.data.sla.create({
+          name: params.name.trim(),
+          grace_period: params.grace_period !== undefined ? params.grace_period : 24,
+          flags: params.flags !== undefined ? params.flags : 1,
+          schedule_id: 0,
+          notes: params.notes || null,
+          created: now,
+          updated: now,
+        });
+        return { content: [{ type: 'text', text: JSON.stringify({ id: result.id, name: params.name.trim() }) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
+  server.tool(
+    'update_sla',
+    'Update an SLA plan.',
+    {
+      sla_id: z.number(),
+      name: z.string().optional(),
+      grace_period: z.number().optional(),
+      flags: z.number().optional(),
+      notes: z.string().optional(),
+    },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        const sdk = getSdk();
+        const existing = await sdk.data.sla.findById(params.sla_id);
+        if (!existing) return { content: [{ type: 'text', text: 'SLA plan not found' }], isError: true };
+
+        const updates = {};
+        if (params.name !== undefined) updates.name = params.name.trim();
+        if (params.grace_period !== undefined) updates.grace_period = params.grace_period;
+        if (params.flags !== undefined) updates.flags = params.flags;
+        if (params.notes !== undefined) updates.notes = params.notes;
+        if (Object.keys(updates).length === 0) return { content: [{ type: 'text', text: 'No updates' }], isError: true };
+        updates.updated = new Date();
+
+        await sdk.data.sla.update(params.sla_id, updates);
+        return { content: [{ type: 'text', text: JSON.stringify({ sla_id: params.sla_id, updated: true }) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
+  server.tool(
+    'delete_sla',
+    'Delete an SLA plan. Fails if referenced by departments, topics, or tickets.',
+    { sla_id: z.number() },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        const sdk = getSdk();
+        const existing = await sdk.data.sla.findById(params.sla_id);
+        if (!existing) return { content: [{ type: 'text', text: 'SLA plan not found' }], isError: true };
+
+        const conn = sdk.connection;
+        const d = parseInt(await conn.queryValue(`SELECT COUNT(*) FROM ${conn.table('department')} WHERE sla_id = ?`, [params.sla_id]) || 0, 10);
+        if (d > 0) return { content: [{ type: 'text', text: `Cannot delete — referenced by ${d} department(s)` }], isError: true };
+
+        const t = parseInt(await conn.queryValue(`SELECT COUNT(*) FROM ${conn.table('help_topic')} WHERE sla_id = ?`, [params.sla_id]) || 0, 10);
+        if (t > 0) return { content: [{ type: 'text', text: `Cannot delete — referenced by ${t} help topic(s)` }], isError: true };
+
+        const k = parseInt(await conn.queryValue(`SELECT COUNT(*) FROM ${conn.table('ticket')} WHERE sla_id = ?`, [params.sla_id]) || 0, 10);
+        if (k > 0) return { content: [{ type: 'text', text: `Cannot delete — referenced by ${k} ticket(s)` }], isError: true };
+
+        await sdk.data.sla.remove(params.sla_id);
+        return { content: [{ type: 'text', text: JSON.stringify({ sla_id: params.sla_id, deleted: true }) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
   // ── Settings ──
 
   server.tool(
