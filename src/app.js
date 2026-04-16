@@ -141,6 +141,14 @@ const start = async () => {
     // Initialize database connection
     await db.initialize();
 
+    // Seed default email templates and bulk event types (idempotent)
+    try {
+      const { seed } = require('./lib/seedEmailTemplates');
+      await seed();
+    } catch (e) {
+      console.warn('Seed step failed:', e.message);
+    }
+
     // Start server
     const server = app.listen(config.port, config.host, () => {
       console.log(`Nodeticket server running on http://${config.host}:${config.port}`);
