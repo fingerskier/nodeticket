@@ -32,6 +32,7 @@ const faqRoutes = require('./routes/faq');
 const taskRoutes = require('./routes/tasks');
 const systemRoutes = require('./routes/system');
 const roleRoutes = require('./routes/roles');
+const settingsRoutes = require('./routes/settings');
 
 // Import HTML routes
 const htmlRoutes = require('./routes/html');
@@ -106,6 +107,7 @@ app.use('/api/v1/sla', slaRoutes);
 app.use('/api/v1/faq', faqRoutes);
 app.use('/api/v1/tasks', taskRoutes);
 app.use('/api/v1/roles', roleRoutes);
+app.use('/api/v1/settings', settingsRoutes);
 app.use('/api/v1', systemRoutes);
 
 // Legacy interoperability endpoints
