@@ -163,7 +163,166 @@ const get = async (req, res) => {
   });
 };
 
+/**
+ * Create help topic (admin)
+ */
+const create = async (req, res) => {
+  const conn = getSdk().connection;
+  const { topic, topic_pid, dept_id, priority_id, sla_id, staff_id, team_id,
+          ispublic, noautoresp, flags, sort, notes, number_format } = req.body;
+
+  if (!topic || typeof topic !== 'string' || topic.trim().length === 0) {
+    throw ApiError.badRequest('topic name is required');
+  }
+  if (topic.length > 128) {
+    throw ApiError.badRequest('topic name must be 128 chars or less');
+  }
+
+  const parentId = topic_pid || 0;
+
+  const dup = await conn.queryOne(
+    `SELECT topic_id FROM ${conn.table('help_topic')} WHERE LOWER(topic) = LOWER(?) AND topic_pid = ?`,
+    [topic.trim(), parentId]
+  );
+  if (dup) throw ApiError.conflict('A topic with that name already exists in this scope');
+
+  if (parentId) {
+    const parent = await conn.queryOne(
+      `SELECT topic_id FROM ${conn.table('help_topic')} WHERE topic_id = ?`,
+      [parentId]
+    );
+    if (!parent) throw ApiError.badRequest('Parent topic not found');
+  }
+
+  const now = new Date();
+  const result = await conn.query(
+    `INSERT INTO ${conn.table('help_topic')}
+     (topic_pid, topic, ispublic, noautoresp, flags, sort, dept_id, priority_id, sla_id, staff_id, team_id, number_format, notes, created, updated)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      parentId,
+      topic.trim(),
+      ispublic !== undefined ? (ispublic ? 1 : 0) : 1,
+      noautoresp ? 1 : 0,
+      flags !== undefined ? flags : 1,
+      sort || 0,
+      dept_id || 0,
+      priority_id || 0,
+      sla_id || 0,
+      staff_id || 0,
+      team_id || 0,
+      number_format || null,
+      notes || null,
+      now,
+      now,
+    ]
+  );
+
+  const insertId = result?.insertId || result?.lastInsertId || result?.id;
+  res.status(201).json({ success: true, data: { topic_id: insertId, topic: topic.trim() } });
+};
+
+/**
+ * Update help topic (admin)
+ */
+const update = async (req, res) => {
+  const conn = getSdk().connection;
+  const { id } = req.params;
+  const existing = await conn.queryOne(
+    `SELECT * FROM ${conn.table('help_topic')} WHERE topic_id = ?`,
+    [id]
+  );
+  if (!existing) throw ApiError.notFound('Help topic not found');
+
+  const { topic, topic_pid, dept_id, priority_id, sla_id, staff_id, team_id,
+          ispublic, noautoresp, flags, sort, notes, number_format } = req.body;
+
+  const updates = [];
+  const params = [];
+
+  if (topic !== undefined) {
+    if (!topic || topic.trim().length === 0) throw ApiError.badRequest('topic cannot be empty');
+    if (topic.length > 128) throw ApiError.badRequest('topic name must be 128 chars or less');
+    const parentScope = topic_pid !== undefined ? (topic_pid || 0) : existing.topic_pid;
+    const dup = await conn.queryOne(
+      `SELECT topic_id FROM ${conn.table('help_topic')} WHERE LOWER(topic) = LOWER(?) AND topic_pid = ? AND topic_id != ?`,
+      [topic.trim(), parentScope, id]
+    );
+    if (dup) throw ApiError.conflict('A topic with that name already exists in this scope');
+    updates.push('topic = ?'); params.push(topic.trim());
+  }
+
+  if (topic_pid !== undefined) {
+    const newParent = topic_pid || 0;
+    if (newParent === parseInt(id, 10)) throw ApiError.badRequest('Topic cannot be its own parent');
+    if (newParent) {
+      const parent = await conn.queryOne(
+        `SELECT topic_id FROM ${conn.table('help_topic')} WHERE topic_id = ?`, [newParent]
+      );
+      if (!parent) throw ApiError.badRequest('Parent topic not found');
+    }
+    updates.push('topic_pid = ?'); params.push(newParent);
+  }
+
+  if (dept_id !== undefined) { updates.push('dept_id = ?'); params.push(dept_id || 0); }
+  if (priority_id !== undefined) { updates.push('priority_id = ?'); params.push(priority_id || 0); }
+  if (sla_id !== undefined) { updates.push('sla_id = ?'); params.push(sla_id || 0); }
+  if (staff_id !== undefined) { updates.push('staff_id = ?'); params.push(staff_id || 0); }
+  if (team_id !== undefined) { updates.push('team_id = ?'); params.push(team_id || 0); }
+  if (ispublic !== undefined) { updates.push('ispublic = ?'); params.push(ispublic ? 1 : 0); }
+  if (noautoresp !== undefined) { updates.push('noautoresp = ?'); params.push(noautoresp ? 1 : 0); }
+  if (flags !== undefined) { updates.push('flags = ?'); params.push(flags); }
+  if (sort !== undefined) { updates.push('sort = ?'); params.push(sort); }
+  if (notes !== undefined) { updates.push('notes = ?'); params.push(notes); }
+  if (number_format !== undefined) { updates.push('number_format = ?'); params.push(number_format); }
+
+  if (updates.length === 0) throw ApiError.badRequest('No fields to update');
+
+  updates.push('updated = ?');
+  params.push(new Date());
+  params.push(id);
+
+  await conn.query(
+    `UPDATE ${conn.table('help_topic')} SET ${updates.join(', ')} WHERE topic_id = ?`,
+    params
+  );
+
+  res.json({ success: true, message: 'Help topic updated' });
+};
+
+/**
+ * Remove help topic (admin)
+ */
+const remove = async (req, res) => {
+  const conn = getSdk().connection;
+  const { id } = req.params;
+  const existing = await conn.queryOne(
+    `SELECT topic_id FROM ${conn.table('help_topic')} WHERE topic_id = ?`, [id]
+  );
+  if (!existing) throw ApiError.notFound('Help topic not found');
+
+  const children = await conn.queryOne(
+    `SELECT COUNT(*) as count FROM ${conn.table('help_topic')} WHERE topic_pid = ?`, [id]
+  );
+  if (parseInt(children?.count || 0, 10) > 0) {
+    throw ApiError.conflict('Cannot delete topic with child topics');
+  }
+
+  const tickets = await conn.queryOne(
+    `SELECT COUNT(*) as count FROM ${conn.table('ticket')} WHERE topic_id = ?`, [id]
+  );
+  if (parseInt(tickets?.count || 0, 10) > 0) {
+    throw ApiError.conflict('Cannot delete topic with existing tickets');
+  }
+
+  await conn.query(`DELETE FROM ${conn.table('help_topic')} WHERE topic_id = ?`, [id]);
+  res.json({ success: true, message: 'Help topic deleted' });
+};
+
 module.exports = {
   list,
   get,
+  create,
+  update,
+  remove,
 };
