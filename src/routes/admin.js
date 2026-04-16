@@ -1109,31 +1109,36 @@ router.get('/sla', asyncHandler(async (req, res) => {
   const base = await getAdminData(req);
 
   let slaHtml = '<p>No SLA plans found.</p>';
+  const createBtn = base.isAdmin ? `<div style="margin-bottom:1em"><a href="/admin/sla/create/edit" class="btn btn-primary">Create SLA Plan</a></div>` : '';
 
   try {
     const slas = await db.query(`SELECT * FROM ${db.table('sla')} ORDER BY name`);
 
     if (slas.length > 0) {
-      slaHtml = `
+      slaHtml = createBtn + `
         <table class="data-table">
           <thead>
             <tr>
               <th>Name</th>
               <th>Grace Period</th>
               <th>Status</th>
+              ${base.isAdmin ? '<th>Actions</th>' : ''}
             </tr>
           </thead>
           <tbody>
             ${slas.map(s => `
               <tr>
-                <td>${escapeHtml(s.name)}</td>
+                <td><a href="/admin/sla/${s.id}">${escapeHtml(s.name)}</a></td>
                 <td>${s.grace_period} hours</td>
                 <td>${s.flags & 1 ? '<span class="badge badge-success">Active</span>' : '<span class="badge badge-danger">Inactive</span>'}</td>
+                ${base.isAdmin ? `<td><a href="/admin/sla/${s.id}/edit">Edit</a></td>` : ''}
               </tr>
             `).join('')}
           </tbody>
         </table>
       `;
+    } else {
+      slaHtml = createBtn + slaHtml;
     }
   } catch (e) {
     console.error('Error loading SLAs:', e);
@@ -1141,6 +1146,135 @@ router.get('/sla', asyncHandler(async (req, res) => {
   }
 
   res.send(renderAdminPage('SLA Plans', slaHtml, base, 'sla'));
+}));
+
+/**
+ * SLA detail (admin)
+ */
+router.get('/sla/:id', asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const { id } = req.params;
+  if (id === 'create') return res.redirect('/admin/sla/create/edit');
+
+  const sla = await db.queryOne(`SELECT * FROM ${db.table('sla')} WHERE id = ?`, [id]);
+  if (!sla) return res.redirect('/admin/sla');
+
+  const deptCount = await db.queryOne(`SELECT COUNT(*) as count FROM ${db.table('department')} WHERE sla_id = ?`, [id]);
+  const topicCount = await db.queryOne(`SELECT COUNT(*) as count FROM ${db.table('help_topic')} WHERE sla_id = ?`, [id]);
+  const ticketCount = await db.queryOne(`SELECT COUNT(*) as count FROM ${db.table('ticket')} WHERE sla_id = ?`, [id]);
+
+  const error = req.query.error;
+  const errorMsg = error === 'referenced' ? '<div class="alert alert-danger">Cannot delete — SLA is referenced by departments, topics, or tickets.</div>' : '';
+
+  const content = `
+    <h2>${escapeHtml(sla.name)}</h2>
+    ${errorMsg}
+    <dl class="detail-grid">
+      <dt>Grace Period</dt><dd>${sla.grace_period} hours</dd>
+      <dt>Active</dt><dd>${sla.flags & 1 ? 'Yes' : 'No'}</dd>
+      <dt>Escalate</dt><dd>${sla.flags & 2 ? 'Yes' : 'No'}</dd>
+      <dt>No Alerts</dt><dd>${sla.flags & 4 ? 'Yes' : 'No'}</dd>
+      <dt>Transient</dt><dd>${sla.flags & 8 ? 'Yes' : 'No'}</dd>
+      <dt>Departments using</dt><dd>${deptCount?.count || 0}</dd>
+      <dt>Help topics using</dt><dd>${topicCount?.count || 0}</dd>
+      <dt>Tickets using</dt><dd>${ticketCount?.count || 0}</dd>
+      <dt>Notes</dt><dd>${escapeHtml(sla.notes || '—')}</dd>
+    </dl>
+    ${base.isAdmin ? `
+      <div style="margin-top:1em">
+        <a href="/admin/sla/${sla.id}/edit" class="btn btn-primary">Edit</a>
+        <form method="POST" action="/admin/sla/${sla.id}/delete" style="display:inline" onsubmit="return confirm('Delete this SLA?')">
+          <input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">
+          <button type="submit" class="btn btn-danger">Delete</button>
+        </form>
+      </div>
+    ` : ''}
+    <p style="margin-top:1em"><a href="/admin/sla">← Back to SLA plans</a></p>
+  `;
+  res.send(renderAdminPage(sla.name, content, base, 'sla'));
+}));
+
+router.get('/sla/:id/edit', requireAdminSession, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const { id } = req.params;
+  const isCreate = id === 'create';
+
+  let sla = { id: null, name: '', grace_period: 24, flags: 1, notes: '' };
+  if (!isCreate) {
+    const existing = await db.queryOne(`SELECT * FROM ${db.table('sla')} WHERE id = ?`, [id]);
+    if (!existing) return res.redirect('/admin/sla');
+    sla = existing;
+  }
+
+  const action = isCreate ? '/admin/sla/create' : `/admin/sla/${sla.id}/update`;
+  const content = `
+    <h2>${isCreate ? 'Create' : 'Edit'} SLA Plan</h2>
+    <form method="POST" action="${action}">
+      <input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">
+      <div class="form-group"><label>Name</label><input type="text" name="name" value="${escapeHtml(sla.name)}" maxlength="64" required></div>
+      <div class="form-group"><label>Grace Period (hours)</label><input type="number" name="grace_period" value="${sla.grace_period}" min="0" required></div>
+      <div class="form-group"><label><input type="checkbox" name="active" ${sla.flags & 1 ? 'checked' : ''}> Active</label></div>
+      <div class="form-group"><label><input type="checkbox" name="escalate" ${sla.flags & 2 ? 'checked' : ''}> Escalate</label></div>
+      <div class="form-group"><label><input type="checkbox" name="noalerts" ${sla.flags & 4 ? 'checked' : ''}> No Alerts</label></div>
+      <div class="form-group"><label><input type="checkbox" name="transient" ${sla.flags & 8 ? 'checked' : ''}> Transient</label></div>
+      <div class="form-group"><label>Notes</label><textarea name="notes" rows="3">${escapeHtml(sla.notes || '')}</textarea></div>
+      <button type="submit" class="btn btn-primary">${isCreate ? 'Create' : 'Save'}</button>
+      <a href="/admin/sla" class="btn">Cancel</a>
+    </form>
+  `;
+  res.send(renderAdminPage(isCreate ? 'Create SLA' : 'Edit SLA', content, base, 'sla'));
+}));
+
+const buildSlaFlags = (body) => {
+  let f = 0;
+  if (body.active) f |= 1;
+  if (body.escalate) f |= 2;
+  if (body.noalerts) f |= 4;
+  if (body.transient) f |= 8;
+  return f;
+};
+
+router.post('/sla/create', requireAdminSession, asyncHandler(async (req, res) => {
+  const { name, grace_period, notes } = req.body;
+  if (!name || !name.trim()) return res.redirect('/admin/sla/create/edit');
+
+  const dup = await db.queryOne(`SELECT id FROM ${db.table('sla')} WHERE name = ?`, [name.trim()]);
+  if (dup) return res.redirect('/admin/sla/create/edit?error=duplicate');
+
+  const now = new Date();
+  await db.query(
+    `INSERT INTO ${db.table('sla')} (schedule_id, flags, grace_period, name, notes, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [0, buildSlaFlags(req.body), parseInt(grace_period, 10) || 24, name.trim(), notes || null, now, now]
+  );
+  res.redirect('/admin/sla');
+}));
+
+router.post('/sla/:id/update', requireAdminSession, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { name, grace_period, notes } = req.body;
+  const existing = await db.queryOne(`SELECT id FROM ${db.table('sla')} WHERE id = ?`, [id]);
+  if (!existing) return res.redirect('/admin/sla');
+
+  const dup = await db.queryOne(`SELECT id FROM ${db.table('sla')} WHERE name = ? AND id != ?`, [name.trim(), id]);
+  if (dup) return res.redirect(`/admin/sla/${id}/edit?error=duplicate`);
+
+  await db.query(
+    `UPDATE ${db.table('sla')} SET name = ?, grace_period = ?, flags = ?, notes = ?, updated = ? WHERE id = ?`,
+    [name.trim(), parseInt(grace_period, 10) || 24, buildSlaFlags(req.body), notes || null, new Date(), id]
+  );
+  res.redirect(`/admin/sla/${id}`);
+}));
+
+router.post('/sla/:id/delete', requireAdminSession, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const deptCount = await db.queryOne(`SELECT COUNT(*) as count FROM ${db.table('department')} WHERE sla_id = ?`, [id]);
+  const topicCount = await db.queryOne(`SELECT COUNT(*) as count FROM ${db.table('help_topic')} WHERE sla_id = ?`, [id]);
+  const ticketCount = await db.queryOne(`SELECT COUNT(*) as count FROM ${db.table('ticket')} WHERE sla_id = ?`, [id]);
+  const refs = parseInt(deptCount?.count || 0, 10) + parseInt(topicCount?.count || 0, 10) + parseInt(ticketCount?.count || 0, 10);
+  if (refs > 0) return res.redirect(`/admin/sla/${id}?error=referenced`);
+
+  await db.query(`DELETE FROM ${db.table('sla')} WHERE id = ?`, [id]);
+  res.redirect('/admin/sla');
 }));
 
 /**
