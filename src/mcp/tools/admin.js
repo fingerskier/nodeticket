@@ -516,6 +516,74 @@ const registerAdminTools = (server, userAuth) => {
     }
   );
 
+  // ── Email Templates ──
+
+  server.tool(
+    'list_email_templates',
+    'List email templates, optionally filtered by template group ID.',
+    { tpl_id: z.number().optional().describe('Filter by template group ID') },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        let sql = `SELECT et.*, etg.name as group_name FROM ${db.table('email_template')} et
+                   LEFT JOIN ${db.table('email_template_group')} etg ON et.tpl_id = etg.tpl_id`;
+        const args = [];
+        if (params.tpl_id) { sql += ` WHERE et.tpl_id = ?`; args.push(params.tpl_id); }
+        sql += ` ORDER BY etg.name, et.code_name`;
+        const rows = await db.query(sql, args);
+        return { content: [{ type: 'text', text: JSON.stringify(rows.map(r => ({
+          id: r.id, tpl_id: r.tpl_id, code_name: r.code_name, subject: r.subject, group_name: r.group_name,
+        })), null, 2) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
+  server.tool(
+    'get_email_template',
+    'Get a single email template with subject, body, and group info.',
+    { template_id: z.number() },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        const tpl = await db.queryOne(
+          `SELECT et.*, etg.name as group_name FROM ${db.table('email_template')} et
+           LEFT JOIN ${db.table('email_template_group')} etg ON et.tpl_id = etg.tpl_id
+           WHERE et.id = ?`,
+          [params.template_id]
+        );
+        if (!tpl) return { content: [{ type: 'text', text: 'Template not found' }], isError: true };
+        return { content: [{ type: 'text', text: JSON.stringify(tpl, null, 2) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
+  server.tool(
+    'update_email_template',
+    'Update an email template subject, body, or notes.',
+    {
+      template_id: z.number(),
+      subject: z.string().optional(),
+      body: z.string().optional(),
+      notes: z.string().optional(),
+    },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        const existing = await db.queryOne(`SELECT id FROM ${db.table('email_template')} WHERE id = ?`, [params.template_id]);
+        if (!existing) return { content: [{ type: 'text', text: 'Template not found' }], isError: true };
+        const updates = [];
+        const vals = [];
+        if (params.subject !== undefined) { updates.push('subject = ?'); vals.push(params.subject); }
+        if (params.body !== undefined) { updates.push('body = ?'); vals.push(params.body); }
+        if (params.notes !== undefined) { updates.push('notes = ?'); vals.push(params.notes); }
+        if (updates.length === 0) return { content: [{ type: 'text', text: 'No updates' }], isError: true };
+        updates.push('updated = ?'); vals.push(new Date()); vals.push(params.template_id);
+        await db.query(`UPDATE ${db.table('email_template')} SET ${updates.join(', ')} WHERE id = ?`, vals);
+        return { content: [{ type: 'text', text: JSON.stringify({ template_id: params.template_id, updated: true }) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
   // ── Settings ──
 
   server.tool(
