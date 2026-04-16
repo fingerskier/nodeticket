@@ -1349,6 +1349,218 @@ router.post('/settings/update', asyncHandler(async (req, res) => {
 }));
 
 /**
+ * Email Templates — group list
+ */
+router.get('/email-templates', asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const groups = await db.query(
+    `SELECT etg.*, (SELECT COUNT(*) FROM ${db.table('email_template')} et WHERE et.tpl_id = etg.tpl_id) as template_count
+     FROM ${db.table('email_template_group')} etg ORDER BY etg.name`
+  );
+  const createBtn = base.isAdmin ? `<div style="margin-bottom:1em"><a href="/admin/email-templates/groups/create/edit" class="btn btn-primary">Create Group</a></div>` : '';
+
+  let html;
+  if (groups.length === 0) {
+    html = createBtn + '<p>No template groups. Default group is seeded on first server start.</p>';
+  } else {
+    html = createBtn + `
+      <table class="data-table">
+        <thead><tr><th>Name</th><th>Active</th><th>Language</th><th>Templates</th>${base.isAdmin ? '<th>Actions</th>' : ''}</tr></thead>
+        <tbody>
+          ${groups.map(g => `
+            <tr>
+              <td><a href="/admin/email-templates/groups/${g.tpl_id}">${escapeHtml(g.name)}</a></td>
+              <td>${g.isactive ? 'Yes' : 'No'}</td>
+              <td>${escapeHtml(g.lang)}</td>
+              <td>${g.template_count}</td>
+              ${base.isAdmin ? `<td><a href="/admin/email-templates/groups/${g.tpl_id}/edit">Edit</a></td>` : ''}
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+  res.send(renderAdminPage('Email Templates', html, base, 'email-templates'));
+}));
+
+router.get('/email-templates/groups/:id/edit', requireAdminSession, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const { id } = req.params;
+  const isCreate = id === 'create';
+  let group = { tpl_id: null, name: '', isactive: 1, lang: 'en_US', notes: '' };
+  if (!isCreate) {
+    const row = await db.queryOne(`SELECT * FROM ${db.table('email_template_group')} WHERE tpl_id = ?`, [id]);
+    if (!row) return res.redirect('/admin/email-templates');
+    group = row;
+  }
+  const action = isCreate ? '/admin/email-templates/groups/create' : `/admin/email-templates/groups/${group.tpl_id}/update`;
+  const content = `
+    <h2>${isCreate ? 'Create' : 'Edit'} Template Group</h2>
+    <form method="POST" action="${action}">
+      <input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">
+      <div class="form-group"><label>Name</label><input type="text" name="name" value="${escapeHtml(group.name)}" maxlength="32" required></div>
+      <div class="form-group"><label><input type="checkbox" name="isactive" ${group.isactive ? 'checked' : ''}> Active</label></div>
+      <div class="form-group"><label>Language</label><input type="text" name="lang" value="${escapeHtml(group.lang)}" maxlength="16"></div>
+      <div class="form-group"><label>Notes</label><textarea name="notes" rows="3">${escapeHtml(group.notes || '')}</textarea></div>
+      <button type="submit" class="btn btn-primary">${isCreate ? 'Create' : 'Save'}</button>
+      <a href="/admin/email-templates" class="btn">Cancel</a>
+      ${!isCreate ? `<button type="submit" formaction="/admin/email-templates/groups/${group.tpl_id}/delete" class="btn btn-danger" onclick="return confirm('Delete this group? Only empty groups can be deleted.')">Delete</button>` : ''}
+    </form>
+  `;
+  res.send(renderAdminPage(isCreate ? 'Create Group' : 'Edit Group', content, base, 'email-templates'));
+}));
+
+router.post('/email-templates/groups/create', requireAdminSession, asyncHandler(async (req, res) => {
+  const { name, isactive, lang, notes } = req.body;
+  if (!name || !name.trim()) return res.redirect('/admin/email-templates/groups/create/edit');
+  const dup = await db.queryOne(`SELECT tpl_id FROM ${db.table('email_template_group')} WHERE name = ?`, [name.trim()]);
+  if (dup) return res.redirect('/admin/email-templates/groups/create/edit?error=duplicate');
+  const now = new Date();
+  await db.query(
+    `INSERT INTO ${db.table('email_template_group')} (isactive, name, lang, notes, created, updated) VALUES (?, ?, ?, ?, ?, ?)`,
+    [isactive ? 1 : 0, name.trim(), lang || 'en_US', notes || null, now, now]
+  );
+  res.redirect('/admin/email-templates');
+}));
+
+router.post('/email-templates/groups/:id/update', requireAdminSession, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { name, isactive, lang, notes } = req.body;
+  await db.query(
+    `UPDATE ${db.table('email_template_group')} SET name = ?, isactive = ?, lang = ?, notes = ?, updated = ? WHERE tpl_id = ?`,
+    [name.trim(), isactive ? 1 : 0, lang || 'en_US', notes || null, new Date(), id]
+  );
+  res.redirect(`/admin/email-templates/groups/${id}`);
+}));
+
+router.post('/email-templates/groups/:id/delete', requireAdminSession, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const tpls = await db.queryOne(`SELECT COUNT(*) as count FROM ${db.table('email_template')} WHERE tpl_id = ?`, [id]);
+  if (parseInt(tpls?.count || 0, 10) > 0) return res.redirect(`/admin/email-templates/groups/${id}?error=not-empty`);
+  await db.query(`DELETE FROM ${db.table('email_template_group')} WHERE tpl_id = ?`, [id]);
+  res.redirect('/admin/email-templates');
+}));
+
+router.get('/email-templates/groups/:id', asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const { id } = req.params;
+  if (id === 'create') return res.redirect('/admin/email-templates/groups/create/edit');
+  const group = await db.queryOne(`SELECT * FROM ${db.table('email_template_group')} WHERE tpl_id = ?`, [id]);
+  if (!group) return res.redirect('/admin/email-templates');
+
+  const templates = await db.query(
+    `SELECT * FROM ${db.table('email_template')} WHERE tpl_id = ? ORDER BY code_name`, [id]
+  );
+
+  const error = req.query.error === 'not-empty' ? '<div class="alert alert-danger">Cannot delete — group has templates.</div>' : '';
+  const content = `
+    <h2>${escapeHtml(group.name)}</h2>
+    ${error}
+    <p>${group.isactive ? 'Active' : 'Inactive'} · ${escapeHtml(group.lang)}</p>
+    ${base.isAdmin ? `<a href="/admin/email-templates/groups/${group.tpl_id}/edit" class="btn">Edit Group</a>` : ''}
+    <h3>Templates</h3>
+    <table class="data-table">
+      <thead><tr><th>Code</th><th>Subject</th>${base.isAdmin ? '<th>Actions</th>' : ''}</tr></thead>
+      <tbody>
+        ${templates.map(t => `
+          <tr>
+            <td><code>${escapeHtml(t.code_name)}</code></td>
+            <td>${escapeHtml(t.subject)}</td>
+            ${base.isAdmin ? `<td><a href="/admin/email-templates/${t.id}/edit">Edit</a></td>` : ''}
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+    <p style="margin-top:1em"><a href="/admin/email-templates">← Back to groups</a></p>
+  `;
+  res.send(renderAdminPage(group.name, content, base, 'email-templates'));
+}));
+
+router.get('/email-templates/:id/edit', requireAdminSession, asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const { id } = req.params;
+  const tpl = await db.queryOne(
+    `SELECT et.*, etg.name as group_name FROM ${db.table('email_template')} et
+     LEFT JOIN ${db.table('email_template_group')} etg ON et.tpl_id = etg.tpl_id WHERE et.id = ?`, [id]
+  );
+  if (!tpl) return res.redirect('/admin/email-templates');
+
+  const placeholders = ['{{ticket.number}}', '{{ticket.subject}}', '{{user.name}}', '{{user.email}}',
+                        '{{staff.name}}', '{{ticket.department}}', '{{ticket.status}}', '{{ticket.url}}'];
+
+  const content = `
+    <h2>Edit Template — ${escapeHtml(tpl.code_name)}</h2>
+    <p><small>Group: ${escapeHtml(tpl.group_name || '')}</small></p>
+    <form method="POST" action="/admin/email-templates/${tpl.id}/update">
+      <input type="hidden" name="_csrf" value="${req.csrfToken ? req.csrfToken() : ''}">
+      <div class="form-group">
+        <label>Placeholders</label>
+        <div class="placeholder-chips">${placeholders.map(p => `<button type="button" class="chip" onclick="insertPh('${p}')">${p}</button>`).join(' ')}</div>
+      </div>
+      <div class="form-group"><label>Subject</label><input type="text" id="et-subject" name="subject" value="${escapeHtml(tpl.subject)}" maxlength="255" required></div>
+      <div class="form-group"><label>Body (HTML)</label><textarea id="et-body" name="body" rows="12" required>${escapeHtml(tpl.body)}</textarea></div>
+      <div class="form-group"><label>Notes</label><textarea name="notes" rows="3">${escapeHtml(tpl.notes || '')}</textarea></div>
+      <button type="button" class="btn" onclick="preview()">Preview</button>
+      <button type="submit" class="btn btn-primary">Save</button>
+      <a href="/admin/email-templates/groups/${tpl.tpl_id}" class="btn">Cancel</a>
+    </form>
+    <div id="et-preview" style="margin-top:1em;padding:1em;border:1px solid #ccc;display:none">
+      <h4>Preview</h4>
+      <div id="et-preview-subject" style="font-weight:bold;margin-bottom:0.5em"></div>
+      <div id="et-preview-body"></div>
+    </div>
+    <script>
+      const SAMPLES = {
+        '{{ticket.number}}': '12345',
+        '{{ticket.subject}}': 'Sample ticket subject',
+        '{{user.name}}': 'Jane Customer',
+        '{{user.email}}': 'jane@example.com',
+        '{{staff.name}}': 'John Staff',
+        '{{ticket.department}}': 'Support',
+        '{{ticket.status}}': 'Open',
+        '{{ticket.url}}': 'https://example.com/tickets/12345',
+      };
+      let lastActive = null;
+      ['et-subject','et-body'].forEach(id => {
+        document.getElementById(id).addEventListener('focus', e => lastActive = e.target);
+      });
+      function insertPh(p) {
+        const el = lastActive || document.getElementById('et-body');
+        const s = el.selectionStart || 0;
+        const e = el.selectionEnd || 0;
+        el.value = el.value.slice(0, s) + p + el.value.slice(e);
+        el.focus();
+        el.setSelectionRange(s + p.length, s + p.length);
+      }
+      function preview() {
+        let subject = document.getElementById('et-subject').value;
+        let body = document.getElementById('et-body').value;
+        for (const [k, v] of Object.entries(SAMPLES)) {
+          subject = subject.split(k).join(v);
+          body = body.split(k).join(v);
+        }
+        document.getElementById('et-preview-subject').textContent = 'Subject: ' + subject;
+        document.getElementById('et-preview-body').innerHTML = body;
+        document.getElementById('et-preview').style.display = 'block';
+      }
+    </script>
+  `;
+  res.send(renderAdminPage('Edit Template', content, base, 'email-templates'));
+}));
+
+router.post('/email-templates/:id/update', requireAdminSession, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { subject, body, notes } = req.body;
+  const tpl = await db.queryOne(`SELECT tpl_id FROM ${db.table('email_template')} WHERE id = ?`, [id]);
+  if (!tpl) return res.redirect('/admin/email-templates');
+  await db.query(
+    `UPDATE ${db.table('email_template')} SET subject = ?, body = ?, notes = ?, updated = ? WHERE id = ?`,
+    [subject, body, notes || null, new Date(), id]
+  );
+  res.redirect(`/admin/email-templates/groups/${tpl.tpl_id}`);
+}));
+
+/**
  * FAQ list
  */
 router.get('/faq', asyncHandler(async (req, res) => {
