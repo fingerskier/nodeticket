@@ -28,13 +28,13 @@
 - [x] Role & permission management
 
 ## P3 — Admin & Configuration
-- [ ] System settings management
-- [ ] Email template editor
-- [ ] Help topic management
-- [ ] SLA plan management
-- [ ] Ticket filter / routing rules
-- [ ] Canned responses management
-- [ ] Bulk operations (assign, close, delete)
+- [x] System settings management
+- [x] Email template editor
+- [x] Help topic management
+- [x] SLA plan management
+- [x] Ticket filter / routing rules
+- [x] Canned responses management
+- [x] Bulk operations (assign, close, delete)
 - [x] Reporting & dashboard analytics
 
 ## P4 — Knowledge Base & Communication
