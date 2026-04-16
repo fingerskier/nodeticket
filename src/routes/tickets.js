@@ -5,8 +5,12 @@
 const express = require('express');
 const router = express.Router();
 const ticketController = require('../controllers/ticketController');
-const { authenticate, canAccessTicket, requireStaff, requireVerified } = require('../middleware/auth');
+const { authenticate, canAccessTicket, requireStaff, requireVerified, requireAdmin } = require('../middleware/auth');
 const { asyncHandler } = require('../middleware/errorHandler');
+
+// POST /api/v1/tickets/bulk - Bulk ticket operations (admin)
+// Must be before /:id routes to avoid param conflict
+router.post('/bulk', authenticate, requireAdmin, asyncHandler(ticketController.bulkAction));
 
 // GET /api/v1/tickets - List tickets
 router.get('/', authenticate, asyncHandler(ticketController.list));
