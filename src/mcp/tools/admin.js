@@ -584,6 +584,122 @@ const registerAdminTools = (server, userAuth) => {
     }
   );
 
+  // ── Canned Responses ──
+
+  server.tool(
+    'list_canned_responses',
+    'List canned responses, optionally filtered by department.',
+    {
+      dept_id: z.number().optional().describe('Filter by department (0 = global)'),
+      enabled_only: z.boolean().optional(),
+    },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        let sql = `SELECT cr.*, d.name as dept_name FROM ${db.table('canned_response')} cr
+                   LEFT JOIN ${db.table('department')} d ON cr.dept_id = d.id WHERE 1=1`;
+        const args = [];
+        if (params.dept_id !== undefined) { sql += ` AND cr.dept_id = ?`; args.push(params.dept_id); }
+        if (params.enabled_only) sql += ` AND cr.isenabled = 1`;
+        sql += ` ORDER BY cr.title`;
+        const rows = await db.query(sql, args);
+        return { content: [{ type: 'text', text: JSON.stringify(rows.map(r => ({
+          canned_id: r.canned_id, title: r.title, dept_id: r.dept_id, dept_name: r.dept_name, isenabled: !!r.isenabled,
+        })), null, 2) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
+  server.tool(
+    'get_canned_response',
+    'Get a single canned response with full body.',
+    { canned_id: z.number() },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        const row = await db.queryOne(
+          `SELECT cr.*, d.name as dept_name FROM ${db.table('canned_response')} cr
+           LEFT JOIN ${db.table('department')} d ON cr.dept_id = d.id WHERE cr.canned_id = ?`,
+          [params.canned_id]
+        );
+        if (!row) return { content: [{ type: 'text', text: 'Canned response not found' }], isError: true };
+        return { content: [{ type: 'text', text: JSON.stringify(row, null, 2) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
+  server.tool(
+    'create_canned_response',
+    'Create a canned response.',
+    {
+      title: z.string(),
+      response: z.string(),
+      dept_id: z.number().optional().describe('0 for global'),
+      isenabled: z.boolean().optional(),
+      notes: z.string().optional(),
+    },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        const dup = await db.queryOne(`SELECT canned_id FROM ${db.table('canned_response')} WHERE title = ?`, [params.title.trim()]);
+        if (dup) return { content: [{ type: 'text', text: 'Title already exists' }], isError: true };
+        const now = new Date();
+        const result = await db.query(
+          `INSERT INTO ${db.table('canned_response')} (dept_id, isenabled, title, response, lang, notes, created, updated)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [params.dept_id || 0, params.isenabled === false ? 0 : 1, params.title.trim(), params.response,
+           'en_US', params.notes || null, now, now]
+        );
+        const id = result?.insertId || result?.lastInsertId || result?.id;
+        return { content: [{ type: 'text', text: JSON.stringify({ canned_id: id, title: params.title.trim() }) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
+  server.tool(
+    'update_canned_response',
+    'Update a canned response.',
+    {
+      canned_id: z.number(),
+      title: z.string().optional(),
+      response: z.string().optional(),
+      dept_id: z.number().optional(),
+      isenabled: z.boolean().optional(),
+      notes: z.string().optional(),
+    },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        const existing = await db.queryOne(`SELECT canned_id FROM ${db.table('canned_response')} WHERE canned_id = ?`, [params.canned_id]);
+        if (!existing) return { content: [{ type: 'text', text: 'Canned response not found' }], isError: true };
+        const updates = [];
+        const vals = [];
+        if (params.title !== undefined) { updates.push('title = ?'); vals.push(params.title.trim()); }
+        if (params.response !== undefined) { updates.push('response = ?'); vals.push(params.response); }
+        if (params.dept_id !== undefined) { updates.push('dept_id = ?'); vals.push(params.dept_id || 0); }
+        if (params.isenabled !== undefined) { updates.push('isenabled = ?'); vals.push(params.isenabled ? 1 : 0); }
+        if (params.notes !== undefined) { updates.push('notes = ?'); vals.push(params.notes); }
+        if (updates.length === 0) return { content: [{ type: 'text', text: 'No updates' }], isError: true };
+        updates.push('updated = ?'); vals.push(new Date()); vals.push(params.canned_id);
+        await db.query(`UPDATE ${db.table('canned_response')} SET ${updates.join(', ')} WHERE canned_id = ?`, vals);
+        return { content: [{ type: 'text', text: JSON.stringify({ canned_id: params.canned_id, updated: true }) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
+  server.tool(
+    'delete_canned_response',
+    'Delete a canned response.',
+    { canned_id: z.number() },
+    async (params) => {
+      const check = requireAdmin(); if (check) return check;
+      try {
+        await db.query(`DELETE FROM ${db.table('canned_response')} WHERE canned_id = ?`, [params.canned_id]);
+        return { content: [{ type: 'text', text: JSON.stringify({ canned_id: params.canned_id, deleted: true }) }] };
+      } catch (err) { return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }; }
+    }
+  );
+
   // ── Settings ──
 
   server.tool(
