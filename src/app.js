@@ -34,6 +34,7 @@ const systemRoutes = require('./routes/system');
 const roleRoutes = require('./routes/roles');
 const settingsRoutes = require('./routes/settings');
 const emailTemplateRoutes = require('./routes/emailTemplates');
+const cannedResponseRoutes = require('./routes/cannedResponses');
 
 // Import HTML routes
 const htmlRoutes = require('./routes/html');
@@ -110,6 +111,7 @@ app.use('/api/v1/tasks', taskRoutes);
 app.use('/api/v1/roles', roleRoutes);
 app.use('/api/v1/settings', settingsRoutes);
 app.use('/api/v1/email-templates', emailTemplateRoutes);
+app.use('/api/v1/canned-responses', cannedResponseRoutes);
 app.use('/api/v1', systemRoutes);
 
 // Legacy interoperability endpoints
