@@ -72,6 +72,10 @@ const renderAdminPage = (title, content, base, activeNav = '') => `
       <a href="/admin/roles" class="${activeNav === 'roles' ? 'active' : ''}">Roles</a>
       <a href="/admin/topics" class="${activeNav === 'topics' ? 'active' : ''}">Help Topics</a>
       <a href="/admin/sla" class="${activeNav === 'sla' ? 'active' : ''}">SLA Plans</a>
+      ${base.isAdmin ? `<a href="/admin/settings" class="${activeNav === 'settings' ? 'active' : ''}">Settings</a>` : ''}
+      <a href="/admin/email-templates" class="${activeNav === 'email-templates' ? 'active' : ''}">Email Templates</a>
+      <a href="/admin/canned-responses" class="${activeNav === 'canned-responses' ? 'active' : ''}">Canned Responses</a>
+      ${base.isAdmin ? `<a href="/admin/filters" class="${activeNav === 'filters' ? 'active' : ''}">Filters</a>` : ''}
       <a href="/admin/faq" class="${activeNav === 'faq' ? 'active' : ''}">FAQ</a>
       ${base.isAdmin ? `<a href="/admin/api-keys" class="${activeNav === 'api-keys' ? 'active' : ''}">API Keys</a>` : ''}
     </nav>
