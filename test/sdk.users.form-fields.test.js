@@ -35,8 +35,8 @@ test('listUserFormFields: discovers via form_entry first', async () => {
     }
     if (sql.includes('FROM ost_form_field')) {
       return [
-        { id: 36, form_id: 1, name: 'franchID', label: 'Franchise ID #', type: 'text', sort: 1 },
-        { id: 202, form_id: 1, name: 'CenterPhone', label: 'Center Phone', type: 'phone', sort: 2 },
+        { id: 36, form_id: 1, name: 'site_code', label: 'Site Code', type: 'text', sort: 1 },
+        { id: 202, form_id: 1, name: 'phone', label: 'Phone', type: 'phone', sort: 2 },
       ];
     }
     return [];
@@ -48,8 +48,8 @@ test('listUserFormFields: discovers via form_entry first', async () => {
   assert.equal(discoveryQueried, true, 'should try form_entry discovery first');
   assert.equal(fallbackQueried, false, 'should NOT fall back when discovery succeeds');
   assert.equal(fields.length, 2);
-  assert.equal(fields[0].name, 'franchID');
-  assert.equal(fields[1].name, 'CenterPhone');
+  assert.equal(fields[0].name, 'site_code');
+  assert.equal(fields[1].name, 'phone');
 });
 
 test('listUserFormFields: falls back to form.type="U" when discovery is empty', async () => {
@@ -83,8 +83,8 @@ test('listUserFormFields: returns empty array when nothing at all', async () => 
   assert.deepEqual(fields, []);
 });
 
-// Regression guard for BUG #1487: discovery must NOT require form.type='U'.
-// On the OsteoStrong install, the user form did not have type='U'.
+// Regression guard: discovery must NOT require form.type='U'.
+// Some installs omit type='U' on the user form; discovery must still work via form_entry.
 test('REGRESSION: listUserFormFields does not JOIN form ON type="U" during discovery', async () => {
   const conn = makeFakeConn(({ sql }) => {
     if (sql.includes('DISTINCT form_id') && sql.includes('form_entry')) {
@@ -133,17 +133,17 @@ test('getFormValuesBulk: empty fieldNames → empty inner maps, no SQL', async (
 
 test('getFormValuesBulk: maps rows by user id and field name', async () => {
   const conn = makeFakeConn(() => [
-    { user_id: 1, field_name: 'franchID', value: '00123' },
-    { user_id: 1, field_name: 'CenterPhone', value: '555-0100' },
-    { user_id: 2, field_name: 'franchID', value: '00456' },
+    { user_id: 1, field_name: 'site_code', value: '00123' },
+    { user_id: 1, field_name: 'phone', value: '555-0100' },
+    { user_id: 2, field_name: 'site_code', value: '00456' },
   ]);
   const users = createUsersService(conn, {});
-  const m = await users.getFormValuesBulk([1, 2, 3], ['franchID', 'CenterPhone']);
+  const m = await users.getFormValuesBulk([1, 2, 3], ['site_code', 'phone']);
 
-  assert.equal(m.get(1).get('franchID'), '00123');
-  assert.equal(m.get(1).get('CenterPhone'), '555-0100');
-  assert.equal(m.get(2).get('franchID'), '00456');
-  assert.equal(m.get(2).get('CenterPhone'), undefined);
+  assert.equal(m.get(1).get('site_code'), '00123');
+  assert.equal(m.get(1).get('phone'), '555-0100');
+  assert.equal(m.get(2).get('site_code'), '00456');
+  assert.equal(m.get(2).get('phone'), undefined);
   // User 3 had no form entries but should still be represented.
   assert.equal(m.get(3).size, 0);
 });
