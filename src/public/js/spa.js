@@ -20,12 +20,37 @@ const api = {
     return headers;
   },
 
+  async parseJson(res) {
+    const text = await res.text();
+    if (!text) {
+      return {
+        success: false,
+        message: res.status ? `Empty response (${res.status})` : 'Empty response',
+        status: res.status,
+      };
+    }
+    try {
+      const data = JSON.parse(text);
+      if (typeof data === 'object' && data !== null && data.status == null) {
+        data.status = res.status;
+      }
+      return data;
+    } catch {
+      return {
+        success: false,
+        message: res.ok ? 'Invalid JSON response' : `Request failed (${res.status})`,
+        status: res.status,
+        raw: text.slice(0, 200),
+      };
+    }
+  },
+
   async get(endpoint) {
     const res = await fetch(`/api/v1${endpoint}`, {
       credentials: 'include',
       headers: this.headers()
     });
-    return res.json();
+    return this.parseJson(res);
   },
 
   async post(endpoint, data) {
@@ -35,7 +60,7 @@ const api = {
       credentials: 'include',
       body: JSON.stringify(data)
     });
-    return res.json();
+    return this.parseJson(res);
   },
 
   async put(endpoint, data) {
@@ -45,9 +70,29 @@ const api = {
       credentials: 'include',
       body: JSON.stringify(data)
     });
-    return res.json();
+    return this.parseJson(res);
   }
 };
+
+/** Safe query params from URL / state machine */
+function getAppQuery() {
+  if (app && typeof app.getQuery === 'function') {
+    try {
+      return app.getQuery() || {};
+    } catch {
+      /* fall through */
+    }
+  }
+  // Fallback: parse ygdrassil-style or plain hash query
+  try {
+    const hash = window.location.hash || '';
+    const qIndex = hash.indexOf('?');
+    if (qIndex === -1) return {};
+    return Object.fromEntries(new URLSearchParams(hash.slice(qIndex + 1)));
+  } catch {
+    return {};
+  }
+}
 
 /**
  * Template helpers
@@ -266,7 +311,7 @@ const views = {
     content.classList.add('fade-out');
     await delay(150);
 
-    const query = app.getQuery ? app.getQuery() : {};
+    const query = getAppQuery();
     const page = Math.max(1, parseInt(query.page, 10) || 1);
     const status = query.status || '';
 
@@ -388,7 +433,7 @@ const views = {
       return;
     }
 
-    const query = app.getQuery();
+    const query = getAppQuery();
     const ticketId = query.id;
 
     if (!ticketId) {
@@ -689,19 +734,22 @@ const views = {
     try {
       const res = await api.get('/faq');
       const faqList = document.getElementById('faqList');
+      if (!faqList) return;
 
-      if (!res.success || !res.data?.length) {
-        faqList.innerHTML = '<p>No articles found.</p>';
+      const items = Array.isArray(res?.data) ? res.data : [];
+      if (!res?.success || items.length === 0) {
+        faqList.innerHTML = `<p>${escapeHtml(res?.message || 'No articles found.')}</p>`;
+        faqList.classList.remove('loading');
         return;
       }
 
       faqList.innerHTML = `
         <div class="faq-list">
-          ${res.data.map(f => `
+          ${items.map(f => `
             <div class="faq-item">
-              <h3 class="faq-question">${escapeHtml(f.question)}</h3>
+              <h3 class="faq-question" tabindex="0" role="button">${escapeHtml(f.question)}</h3>
               ${f.category?.name ? `<span class="faq-category">${escapeHtml(f.category.name)}</span>` : ''}
-              <div class="faq-answer">${f.answer}</div>
+              <div class="faq-answer">${escapeHtml(f.answer)}</div>
             </div>
           `).join('')}
         </div>
@@ -711,7 +759,11 @@ const views = {
       initFaqAccordion();
     } catch (e) {
       console.error('Error loading FAQ:', e);
-      document.getElementById('faqList').innerHTML = '<p class="error">Error loading knowledge base.</p>';
+      const faqList = document.getElementById('faqList');
+      if (faqList) {
+        faqList.innerHTML = '<p class="error">Error loading knowledge base.</p>';
+        faqList.classList.remove('loading');
+      }
     }
   }
 };
@@ -726,50 +778,92 @@ async function handleLogin(e) {
   const errorDiv = document.getElementById('loginError');
   const submitBtn = form.querySelector('button[type="submit"]');
 
-  submitBtn.disabled = true;
-  submitBtn.textContent = 'Logging in...';
-  errorDiv.textContent = '';
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Logging in...';
+  }
+  if (errorDiv) errorDiv.textContent = '';
 
   const formData = new FormData(form);
-  const data = Object.fromEntries(formData);
-
-  // Add CSRF token
-  if (window.APP_CONFIG?.csrfToken) {
-    data._csrf = window.APP_CONFIG.csrfToken;
-  }
+  const username = formData.get('username');
+  const password = formData.get('password');
+  const type = formData.get('type') || 'user';
 
   try {
+    // Prefer JSON API login (clear success/error); fall back to form POST
+    const apiRes = await fetch('/api/v1/auth/login', {
+      method: 'POST',
+      headers: api.headers({ 'Content-Type': 'application/json' }),
+      credentials: 'include',
+      body: JSON.stringify({ username, password, type }),
+    });
+    const body = await api.parseJson(apiRes);
+
+    if (apiRes.ok && body.success && body.user) {
+      currentUser = body.user;
+      window.APP_CONFIG = window.APP_CONFIG || {};
+      window.APP_CONFIG.user = body.user;
+      // Staff use admin UI
+      if (body.user.type === 'staff') {
+        window.location.href = '/admin';
+        return;
+      }
+      updateNav();
+      initIdleDetection();
+      app.gotoState('tickets');
+      return;
+    }
+
+    // Form POST path (HTML login) if API failed without a clear auth error
+    if (apiRes.status === 401 || body.message) {
+      if (errorDiv) {
+        errorDiv.textContent = body.message || 'Invalid username or password.';
+      }
+      return;
+    }
+
+    const data = Object.fromEntries(formData);
+    if (window.APP_CONFIG?.csrfToken) {
+      data._csrf = window.APP_CONFIG.csrfToken;
+    }
+
     const res = await fetch('/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       credentials: 'include',
-      body: new URLSearchParams(data)
+      body: new URLSearchParams(data),
+      redirect: 'follow',
     });
 
-    if (res.redirected) {
-      // Login successful - reload to get session
-      window.location.href = res.url;
+    if (res.redirected || (res.url && !res.url.includes('error='))) {
+      window.location.href = res.url || '/';
       return;
     }
 
-    // Check if we got redirected back to login with error
-    const url = new URL(res.url);
-    const error = url.searchParams.get('error');
+    let error = null;
+    try {
+      error = new URL(res.url).searchParams.get('error');
+    } catch { /* ignore */ }
 
-    if (error === 'invalid') {
-      errorDiv.textContent = 'Invalid username or password.';
-    } else if (error === 'server') {
-      errorDiv.textContent = 'A server error occurred. Please try again.';
-    } else {
-      // Try to reload and check session
-      window.location.reload();
+    if (errorDiv) {
+      if (error === 'invalid') {
+        errorDiv.textContent = 'Invalid username or password.';
+      } else if (error === 'server') {
+        errorDiv.textContent = 'A server error occurred. Please try again.';
+      } else if (res.status === 403) {
+        errorDiv.textContent = 'Security check failed (CSRF). Please refresh the page and try again.';
+      } else {
+        errorDiv.textContent = 'Login failed. Please check your credentials.';
+      }
     }
   } catch (e) {
     console.error('Login error:', e);
-    errorDiv.textContent = 'Connection error. Please try again.';
+    if (errorDiv) errorDiv.textContent = 'Connection error. Please try again.';
   } finally {
-    submitBtn.disabled = false;
-    submitBtn.textContent = 'Login';
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Login';
+    }
   }
 }
 
@@ -864,10 +958,19 @@ function initFaqAccordion() {
     if (question && answer) {
       answer.style.display = 'none';
       question.style.cursor = 'pointer';
-      question.addEventListener('click', () => {
+      const toggle = () => {
         const isOpen = answer.style.display !== 'none';
         answer.style.display = isOpen ? 'none' : 'block';
         question.classList.toggle('open', !isOpen);
+        question.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
+      };
+      question.setAttribute('aria-expanded', 'false');
+      question.addEventListener('click', toggle);
+      question.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          toggle();
+        }
       });
     }
   });
