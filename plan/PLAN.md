@@ -1,743 +1,262 @@
-# Nodeticket Master Plan
+# Nodeticket v1.0 Plan
 
-**Status:** Active  
-**Created:** 2026-07-16  
-**Baseline revision:** `e7fa1f99` (and subsequent docs commits)  
-**Comparison target:** osTicket FOSS **v1.18.4** (pin; expand later only with fixtures)  
-**Evidence:** `plan/FINDINGS.CODEX.md` (authoritative security/schema review), `plan/FINDINGS.GROK.md` (product roadmap lens), `docs/TODO.md`, `FX.md`, `docs/SCHEMA.md`
-
----
-
-## 1. Goals
-
-| # | Goal | Definition of done (summary) |
-|---|------|------------------------------|
-| **G1** | **Feature parity with osTicket FOSS** | Stock HTTP API (JSON/XML/email create + cron) matches v1.18.4 contracts; native ticket lifecycle, RBAC, dept visibility, attachments, SLA, outbound notifications, and schema-correct writes work against a real bootstrapped MySQL osTicket DB. |
-| **G2** | **API & UI updates** | After G1 gates are green: complete native product API (OpenAPI-accurate), operational staff desk UI, hardened customer portal, admin/KB polish, production session/error hardening. |
-
-**Non-goals for the first shippable desk:**
-
-- Full plugin marketplace / PHP plugin binary compatibility  
-- LDAP / 2FA / OAuth identity backends (deferred unless required)  
-- PostgreSQL as a production dialect (fail-fast or separate funded track)  
-- Supporting every historical osTicket schema from v1.8 without version detection  
+**Status:** Active — supersedes the 2026-07-16 parity-first master plan (see §13 changelog; prior plan preserved in git history at `71cd6f7^..`)
+**Created:** 2026-07-17
+**Baseline revision:** `71cd6f7` (all citations verified at this revision)
+**Evidence:** `plan/FINDINGS.CODEX.md` (2026-07-17 security/schema review), `plan/FINDINGS.GROK.md` (historical product lens), `docs/SCHEMA.md`, `docs/FIXTURE.md`
 
 ---
 
-## 2. Strategy and sequencing rules
+## 1. What v1.0 is
 
-### 2.1 Why this order
+**Nodeticket v1.0 is a Node.js help desk that runs safely on an existing osTicket v1.18.4 MySQL database, exposing a modern JSON REST API, a working customer portal and staff desk, and a secure core MCP server.**
 
-Reviews agree that Nodeticket has the right **skeleton** (SDK layers, broad REST map, admin config SSR, customer SPA, MCP) but is **not safe or interoperable** yet:
+| Pillar | Definition of done |
+|---|---|
+| **DB compatibility** | Point Nodeticket at an existing osTicket v1.18.4 MySQL database and operate it: all history, users, topics, forms, and configuration readable; all writes schema-valid, transactional, and non-destructive (rollback to PHP osTicket remains possible). |
+| **JSON REST API** | `/api/v1/*` is the product API: authorization enforced server-side on every mutation, privacy allowlists on every DTO, OpenAPI accurate enough to drive a generated client. `POST /api/tickets.json` and `POST /api/tasks/cron` retained for existing integrations. |
+| **Core MCP** | MCP server enableable in production: OAuth flow safe, principals typed and scoped, all tools routed through the same authorization service as REST. |
+| **Usable desk** | Customer SPA + staff/admin SSR already shipped (U0–U4) keep working on top of the corrected backend; minimal browser smoke proves the critical paths. |
 
-1. Auth trust boundaries are broken (purpose JWTs, API keys as admins).  
-2. Customer data isolation fails (internal notes/events).  
-3. Native ticket writes fail or corrupt current-schema invariants.  
-4. Official create/cron paths are stubs or wrong paths.  
-5. Staff visibility/RBAC is unenforced; staff ticket detail is read-only.
+### 1.1 What v1.0 is NOT
 
-**Rule:** Do **not** expand staff mutation UI or “feature polish” until **Gates A0–A1** are green. Do not claim official parity until **A2–A3**. Hand off to major UI feature work only after **A0–A4 exit criteria** (Section 8).
-
-### 2.2 Dual parity definitions (do not conflate)
-
-| Track | What it is | Success metric |
-|-------|------------|----------------|
-| **Exact external API** | Paths, key/IP/capability auth, payloads, status codes, response bodies of stock osTicket | Differential tests vs stock v1.18.4 |
-| **Product / native API** | Modern `/api/v1/*` help-desk surface for SPA, admin, MCP, CLI | Behavioral tests + OpenAPI client smoke + RBAC matrix |
-
-### 2.3 Engineering principles
-
-1. **SDK-first** — Business logic in `src/sdk/services/*`; controllers stay thin HTTP adapters (`docs/superpowers/specs/2026-04-03-sdk-extraction-design.md`).  
-2. **TDD / red-green** — Write failing HTTP + DB behavioral tests before production fixes. Avoid process/structure-only tests.  
-3. **One authorization service** — Same rules for REST, SSR `/admin`, and MCP tools.  
-4. **osTicket schema is source of truth** — Non-destructive; prefer stock columns/flags/sequences over inventing Node-only columns.  
-5. **MySQL only until proven** — Pin fully bootstrapped **MySQL + osTicket v1.18.4** strict mode as the first fixture.  
-6. **Observable DoD** — Every gate ends with a checklist that can be run in CI.
-
-### 2.4 Document map
-
-| Doc | Role |
-|-----|------|
-| **`plan/PLAN.md`** (this file) | Single ordered execution plan |
-| `plan/FINDINGS.CODEX.md` | Stop-ship findings, acceptance tests, gate sketch (security/schema-first) |
-| `plan/FINDINGS.GROK.md` | Product scorecard, UI gap analysis, P0–P3 product roadmap |
-| `docs/TODO.md` | Phase checklist (P0–P5 historical; treat open P4/P5 as backlog under this plan) |
-| Root `TODO.md` | Open bugs (CSRF scope, Windows CLI flags, etc.) |
-| `FX.md` | Target domain model / invariants (aspirational; implement against schema + tests) |
-| `docs/openapi.json` | Contract seed — regenerate after A4 |
+- **Not a drop-in PHP osTicket replacement.** Exact official-API behavioral parity (differential corpus vs stock PHP) is out of scope.
+- **No XML.** `POST /api/tickets.xml` and the hand-rolled parser are deleted, not fixed.
+- **No live cohabitation.** Sharing one database with a *concurrently running* PHP osTicket is unsupported (writes are stock-valid, but locking/cache/session coordination with PHP is untested).
+- **No PostgreSQL.** Dialect already fails fast; v1.0 removes the dead `pg` dependency and dead code paths.
+- **Deferred:** plugins/webhooks, LDAP/2FA/OAuth identity backends, ticket merge (behind experimental flag, default off), full business-hours SLA engine, browser full matrix (Firefox/WebKit), MCP resources/prompts (tools only in v1.0).
 
 ---
 
-## 3. Current state snapshot
+## 2. Compatibility contract (load-bearing)
 
-### 3.1 What already works (keep)
+Three tiers. v1.0 guarantees T1 and T2; T3 is explicitly out.
 
-- Layered **SDK** (`data/` + `services/`) as package `main`  
-- Wide **REST** surface under `/api/v1` (auth, tickets, users, staff, depts, teams, orgs, topics, SLA, roles, settings, templates, canned, filters, FAQ read, tasks read)  
-- **Admin SSR** config pages (settings, topics, SLA, filters, templates, canned, API keys, bulk list ops)  
-- **Customer SPA** skeleton (login/register, list/create/view/reply, FAQ browse)  
-- **API key** table integration + admin key UI (flags exist; enforcement wrong)  
-- **Filter engine** scaffolding with AND/OR / stop-on-match / reject  
-- **MCP** tools (when enabled)  
-- CLI package entry  
+| Tier | Guarantee | Proof |
+|---|---|---|
+| **T1 Schema-safe** | Every write is valid under `STRICT_TRANS_TABLES` against the stock v1.18.4 schema: no invented columns, no NULL into NOT NULL, required event/thread context columns populated, multi-row operations transactional. | Strict-mode fixture suite (P2) required in CI. |
+| **T2 Adopt-existing** | An existing osTicket DB (retired or read-only PHP) is fully operable: dynamic form data read and written (`form_entry`/`form_entry_values`/cdata), stock filters interpreted safely, sequences/numbering stock-correct, rows we write are readable by stock PHP if the owner rolls back. | Adopt-existing acceptance suite against a committed stock-installed dump (P2). |
+| **T3 Live side-by-side** | **Not guaranteed.** | — |
 
-### 3.2 Stop-ship / parity blockers (from CODEX; must clear early)
-
-| ID | Issue | Impact |
-|----|--------|--------|
-| **C-01** | Purpose JWTs (reset/verify) accepted as access tokens; unknown principal types fail open | Global data exposure via verify/reset links |
-| **C-02** | Any active API key treated as staff/admin; capability flags unused | Create-only keys become superuser |
-| **C-03** | Customer thread includes internal notes `N`; events + private identity fields leaked | Privacy breach on shared DB |
-| **C-04** | Topic query uses nonexistent `help_topic.isactive` | Native create broken on stock schema |
-| **C-05** | Missing required columns (`thread_entry.updated`, event context); non-transactional create; wrong numbering | Strict MySQL fail / orphan tickets |
-| **C-06** | `requirePermission` unused; staff global ticket visibility | Any agent sees/mutates all tickets |
-| **C-07** | Official JSON create stub; no XML/email; cron wrong path and no-op | Zero official HTTP parity |
-
-### 3.3 High-priority product gaps
-
-- Attachments absent entirely under `src/`  
-- Outbound SES not wired to ticket create/reply/auto-response  
-- Inbound mail + SLA monitor cron skipped  
-- Customer reopen always closes (`status_id` → `close`)  
-- Staff ticket detail is read-only (no reply/note/assign/close forms)  
-- OpenAPI drifted from runtime  
-- Session-authenticated SPA mutations lack CSRF coverage (API mounted before CSRF)  
-- Accidental native routes under `/api` (rate-limit bypass)  
-- PostgreSQL advertised but not operational  
-
-### 3.4 Test reality
-
-- `npm test` ≈ CLI + password + form-fields only (**45 tests** at last review).  
-- **Missing:** HTTP routes, authz middleware, ticket lifecycle, fixture DB, differential official API, browser/a11y.  
+**Consequences:** the fixture must be a real stock v1.18.4 installation snapshot (not a hand-written seed); merge stays off by default (its non-stock graph rewrite would break the rollback guarantee); filters we don't understand are skipped and logged, never misapplied.
 
 ---
 
-## 4. Target architecture (end state)
+## 3. FINDINGS.CODEX disposition
+
+The 2026-07-17 review is accurate but written against a recreation goal. v1.0 adopts its security findings whole and rescopes the parity findings to the compatibility contract above.
+
+| Finding | Verdict | v1.0 treatment | Phase |
+|---|---|---|---|
+| C-01 MCP OAuth/principal boundary | **Adopt + elevate** | MCP is a headline feature, so the fix is mandatory, not optional. Full gate in P4; containment (assert-disabled) in P0. | P0, P4 |
+| C-02 inconsistent authz | **Adopt** | One operation-matrix authorization service across REST, admin SSR, tasks, MCP. | P0 |
+| C-03 attachment privacy/atomicity | **Adopt** | Entry-aware policy, ownership verification, transactional reply+files, server-side limits. | P1 |
+| C-04 spoofable inbound email | **Rescope** | Email intake ships **default-off** (`EMAIL_INTAKE_ENABLED=false`). Enable-gate: sender/collaborator authorization, real MIME parser, atomic dedup. No stock nested-MIME differential corpus. | P3 |
+| C-05 non-stock lifecycle semantics | **Split** | Adopt: form_entry writes, transactional update/bulk, strict-schema correctness. Rescope: filters → safe-interpretation (not stock vocabulary re-implementation). Drop from v1.0: merge (flag off), stock filter authoring parity. | P2 |
+| C-06 identity/privacy boundaries | **Adopt** | Typed principal guards, DTO allowlists, account-state revalidation, collision-proof profile routes. | P1 |
+| C-07 fixture not an oracle | **Rescope** | Fixture becomes a committed stock v1.18.4 install dump under strict mode, **required** in CI. No PHP runtime differential in CI. | P2, P5 |
+| H-01 official JSON/XML exactness | **Rescope / drop** | XML deleted. `tickets.json` kept and fixed pragmatically (stock attachment map accepted, alert/autorespond applied, priority persisted) with local behavioral tests — no differential corpus. | P3 |
+| H-02 cron/SLA narrower than stock | **Rescope** | Keep endpoint; document the supported job subset honestly; job failures become observable; overdue uses `est_duedate`. Full stock job set not required. | P3 |
+| H-03 KB/topic config ignored | **Adopt** | `enable_kb` server-side, public allowlists, server-complete pagination/search. | P3 |
+| H-04 OpenAPI not a contract | **Adopt** | Single root server, conditional security modeled, deterministic generation, generated-client smoke. Core to the JSON-REST pillar. | P3 |
+| H-05 CSRF/throttle/proxy/mail-mock | **Adopt** | Production hardening. | P1 |
+| H-06 docs drift | **Adopt** | Reconcile claims to the tested matrix at release. | P5 |
+
+---
+
+## 4. Current state (at `71cd6f7`)
+
+**Works (keep):** layered SDK (`src/sdk/`); broad `/api/v1` REST; purpose-token JWT isolation (`src/lib/tokens.js`); capability-only API keys; transactional create/reply/note kernel with `ost_sequence` numbering; attachments, notifications, tasks, FAQ CRUD, soft locks; customer SPA (`src/public/js/spa.js`) + staff/admin SSR (`src/routes/admin.js`); MySQL fixture harness (`docker-compose.fixture.yml`, `scripts/fixture-bootstrap.js`); OpenAPI generator (75 paths); optional Redis sessions; 114 passing unit tests + 14 fixture tests.
+
+**Blockers (fix):** MCP OAuth/principal safety (C-01, incl. fallback admin principal at `src/mcp/tools/admin.js:833`); mutation authz gaps across REST/admin/tasks/MCP (C-02); attachment trust boundary (C-03); identity boundaries (C-06); dynamic forms not written on create (C-05); fixture is hand-seeded, CI unit-only (C-07); OpenAPI dual-server misrouting (H-04); email fail-open mock, CSRF header exemption ordering, blanket `trust proxy` (H-05).
+
+**Housekeeping:** `pg` is an unused hard dependency with dead dialect branches (`src/sdk/connection.js:54-60`); package version is CalVer `2026.3.1` while `src/mcp/transport.js` hardcodes `1.0.0`; README claims v1.8+ interop.
+
+---
+
+## 5. Phases
+
+Phases are sequential gates; each is red/green (failing behavioral tests first). P0/P1/P2 numbering aligns with FINDINGS.CODEX's revised plan for cross-reading; P3–P5 diverge per §3.
 
 ```
-                    ┌─────────────────────────────────────────┐
-                    │  Clients: SPA | Admin SSR | MCP | CLI   │
-                    └────────────────────┬────────────────────┘
-                                         │
-          ┌──────────────────────────────┼──────────────────────────────┐
-          │                              │                              │
-   Official compat API            Native REST /api/v1/*           HTML forms
-   /api/tickets.json|.xml|.email  JWT | session | (no raw key     CSRF + session
-   /api/tasks/cron                as admin)                            
-   X-API-Key + IP + flags only    
-          │                              │                              │
-          └──────────────────────────────┼──────────────────────────────┘
-                                         ▼
-                              ┌────────────────────┐
-                              │ AuthZ service      │
-                              │ principals + perms │
-                              │ ticket visibility  │
-                              │ field allowlists   │
-                              └─────────┬──────────┘
-                                        ▼
-                              ┌────────────────────┐
-                              │ SDK services       │
-                              │ tickets, auth, …   │
-                              │ transactional ops  │
-                              └─────────┬──────────┘
-                                        ▼
-                              ┌────────────────────┐
-                              │ SDK data + pool    │
-                              │ MySQL ost_* schema │
-                              └────────────────────┘
+P0 Authorization seam ─► P1 Privacy & integrity ─► P2 Existing-DB compat ─► P3 JSON API & channels ─► P4 Core MCP ─► P5 Release
 ```
 
-**Key design decisions to implement:**
-
-1. **API keys are not native principals.** Compatibility routes authenticate the *key*, enforce flags, call SDK create/cron; they never set `req.auth.type = 'staff'` with key id.  
-2. **JWT `token_use`** (or equivalent claim) separates `access` | `refresh` | `password_reset` | `email_verify` | MCP. Shared secret alone is insufficient.  
-3. **Visibility filter** applied in SDK list/get and middleware `canAccessTicket` (dept, extended access, assigned_only, team, referral).  
-4. **Customer DTO allowlists** for ticket, thread, collaborators — notes type `N` never leave the staff boundary.  
-5. **Single transactional create kernel** used by native create, legacy JSON/XML, and eventually email channel.  
-6. **Dedicated compatibility router** mounted at official paths only — remove full native router mount at bare `/api`.
+Effort estimates are order-of-magnitude for one focused engineer.
 
 ---
 
-## 5. Workstreams and gates
+## 6. P0 — One authorization seam (≈1–1.5 weeks)
 
-Work is organized as **API/data gates A0–A4**, then **UI gates U0–U4**. Within each gate: tests → implementation → verification.
+**Objective:** every ticket/task mutation is authorized server-side by one service, on every interface, before any other v1.0 work builds on top.
 
-```
-A0 Trust & isolation ──► A1 Schema fixture & writes ──► A2 JSON official API
-                              │                              │
-                              └──────────────┬───────────────┘
-                                             ▼
-                                      A3 XML + email + cron
-                                             │
-                                             ▼
-                                      A4 Native product API
-                                             │
-                    ┌────────────────────────┼────────────────────────┐
-                    ▼                        ▼                        ▼
-                   U0 Safe UI contracts     U1 Staff ops slice       U2 Attachments UI
-                    │                        │                        │
-                    └──────────┬─────────────┴────────────────────────┘
-                               ▼
-                        U3 Customer hardening
-                               │
-                               ▼
-                        U4 Admin & production
-```
+| # | Task | Files |
+|---|---|---|
+| P0.1 | Assert MCP disabled: startup warning + production assertion while C-01 open (removed in P4) | `src/config/index.js`, `src/app.js:206-210` |
+| P0.2 | Define the operation matrix: view, create, create-on-behalf, reply, note, edit, assign, transfer, close/reopen, attach, lock, bulk, merge, task-* × principal (customer/staff/admin/system) × scope (dept, extended access, `assigned_only`, assignee, team, referral, admin override, role permission) | new `src/sdk/services/authz.js` (extend `src/lib/authz.js`) |
+| P0.3 | Route REST ticket mutations through it — reply, update, assign, transfer, close/reopen, attachments, locks currently unchecked | `src/routes/tickets.js:40-135`, `src/controllers/ticketController.js` |
+| P0.4 | Route admin SSR POST handlers through it (they currently re-check nothing) | `src/routes/admin.js:607-649, 973-1176` |
+| P0.5 | Scope tasks by dept/assignment/permission (currently global staff) | `src/routes/tasks.js:12-27`, `src/controllers/taskController.js:24-55` |
+| P0.6 | Merge: authorize **source and target**; then gate whole feature behind `MERGE_ENABLED=false` (see P2.6) | `src/controllers/ticketController.js:442-459`, `src/sdk/services/tickets.js:1307-1368` |
+| P0.7 | MCP tools call the same service; delete the fallback admin principal | `src/mcp/tools/*.js`, `src/mcp/tools/admin.js:12-20,833` |
 
-Estimated effort is **order-of-magnitude for a focused engineer** (calendar will stretch with fixture/PHP interop and review). Adjust after A1 fixture cost is known.
+**Acceptance (red → green):**
+- [ ] Scoped agent posting a foreign ticket ID to any mutation (REST, admin SSR, task, MCP) → 403/denied
+- [ ] Merge into unauthorized target → denied
+- [ ] Role-permission matrix: each of reply/note/edit/assign/transfer/close/merge denied without its permission, on every interface
+- [ ] `assigned_only`, extended dept access, team, referral each covered by at least one allow and one deny test
+- [ ] MCP enabled in production without P4 green → startup fails
+
+**Exit:** denied requests fail server-side on every interface, independent of UI.
 
 ---
 
-## 6. Gate A0 — Trust boundaries and data isolation
+## 7. P1 — Privacy and write integrity (≈1–1.5 weeks)
 
-**Objective:** Denied requests fail on the server regardless of UI. No purpose token or API key can become a superuser. Customers cannot see internal notes.
+**Objective:** customers can't read or write across trust boundaries; credentials reflect live account state; platform hardening lands.
 
-**Estimated effort:** 1–1.5 weeks  
+| # | Task | Files |
+|---|---|---|
+| P1.1 | Attachment reads filtered by the same publicOnly entry policy as threads (internal-note files currently leak) | `src/sdk/services/tickets.js:1375-1428`, `src/controllers/ticketController.js:336-341` |
+| P1.2 | Verify ticket → thread → entry ownership before file association (foreign `entry_id` currently accepted) | `src/sdk/services/tickets.js:1450-1476`, `src/controllers/ticketController.js:359-366` |
+| P1.3 | Reply + attachments in one transaction (or documented idempotent two-phase); enforce size/count/type/filename server-side | `src/controllers/ticketController.js:276-294`, `src/sdk/services/tickets.js:840-897` |
+| P1.4 | Org/dept privacy: member lists and dept detail behind staff/self allowlists | `src/routes/organizations.js`, `src/sdk/services/organizations.js:89-178`, `src/sdk/services/departments.js:99-153`, `src/routes/users.js:36-37` |
+| P1.5 | Principal-typed profile routes — numeric-ID collision between staff/API-key/customer must be impossible | `src/routes/users.js:11-24`, `src/controllers/userController.js:81-109`, `src/routes/html.js:603-674` |
+| P1.6 | Reject inactive accounts at login/refresh; bounded revalidation of account state/role on session and bearer use; document revocation bound | `src/sdk/services/auth.js:83-90`, `src/controllers/authController.js:198-224`, `src/middleware/auth.js:22-103` |
+| P1.7 | CSRF exemption only after non-session credential *validates* (not on header presence) | `src/app.js:125-148`, `src/middleware/auth.js:109-129` |
+| P1.8 | Dedicated login/reset throttles (HTML routes currently outside the API limiter) | `src/routes/html.js:176-331`, `src/config/index.js:44-50` |
+| P1.9 | `trust proxy` becomes explicit config, not unconditional `1` | `src/app.js:46-47` |
+| P1.10 | Email transport fails closed in production unless `EMAIL_MODE=mock` explicit | `src/lib/email.js:28-36` |
 
-### 6.1 Tasks
+**Acceptance (red → green):**
+- [ ] Customer cannot list/download internal-note attachments; foreign `entry_id` upload denied
+- [ ] Reply-with-file failure leaves no partial write; retry does not duplicate
+- [ ] Non-member cannot read org members/dept internals; profile collision tests across all principal types
+- [ ] Disabled account loses access within documented bound; refresh with disabled account → 401
+- [ ] Forged `X-API-Key` header no longer bypasses CSRF for session requests
+- [ ] Production boot without SES credentials and without explicit mock mode → hard fail
 
-| # | Task | Primary files | Notes |
-|---|------|---------------|-------|
-| A0.1 | Introduce explicit JWT claims: `token_use`, principal `type`, optional `iss`/`aud` | `middleware/auth.js`, `controllers/authController.js`, `routes/html.js` | Reject non-`access` on `authenticate` |
-| A0.2 | Fix refresh: accept only refresh credentials; revalidate account active/verified | `authController.js` | No re-signing of purpose tokens |
-| A0.3 | Fail closed on unknown principal types in `canAccessTicket` / list filters | `middleware/auth.js`, `ticketController.js` | |
-| A0.4 | API-key model: capability-only for official routes; **never** `requireStaff`/`requireAdmin` via bare key | `middleware/auth.js`, route mounts | Map `can_create_tickets` / `can_exec_cron` only |
-| A0.5 | Customer thread/event allowlists; strip notes `N`, staff emails, internal events | `sdk/services/tickets.js`, controllers | Pagination counts after filter |
-| A0.6 | Deny customer `GET .../events` or map to public timeline only | `routes/tickets.js` | Prefer deny for MVP |
-| A0.7 | Staff visibility: primary dept + `staff_dept_access` + `assigned_only` + assignment/team | `auth.js`, ticket list/get, `admin.js` queries | Build shared `authz` helper in SDK or middleware module |
-| A0.8 | Wire `requirePermission` on ticket mutations (reply, note, assign, close, delete, transfer, merge) | `routes/tickets.js`, role JSON mapping | Admins bypass; others need role flags |
-| A0.9 | Org/dept/profile privacy (H-01) | orgs, depts, users, `html.js` profile | Staff profile must not write customer `user` by staff_id |
-| A0.10 | KB disablement + public topic field allowlist | `faq` routes, `topicController`, settings | |
-| A0.11 | Named customer close/reopen (do not honor raw `status_id`) | `ticketController.update`, SPA later | Server-side transition policy |
-| A0.12 | CSRF for session-authenticated API mutations; SameSite cookies; rate-limit all ticket aliases | `app.js`, `spa.js`, `csrf.js` | Exempt pure bearer/API-key only |
-| A0.13 | Remove or restrict dual mount of full ticket router at `/api` | `app.js` | Compat routes only under `/api` |
-| A0.14 | Production error hardening (no raw `err.message` leak; escape HTML errors) | `errorHandler.js` | Can start here; finish in U4 |
-
-### 6.2 Acceptance tests (must be red then green)
-
-- [ ] Reset/verify tokens → **401** on ordinary authenticated endpoints  
-- [ ] Refresh with purpose token → **401**  
-- [ ] Unknown `type` → fail closed  
-- [ ] API key without `can_create_tickets` cannot hit native staff routes  
-- [ ] API key cannot call `requireAdmin` surfaces  
-- [ ] Customer thread has zero type-`N` entries; pagination consistent  
-- [ ] Customer cannot read full event stream  
-- [ ] Staff A cannot list/get ticket in Staff B’s private dept without access  
-- [ ] `assigned_only` staff sees only assigned (+ team) tickets  
-- [ ] Role without “reply” cannot `POST .../reply`  
-- [ ] Cross-site session POST without CSRF fails; same-site with token succeeds  
-- [ ] Public topics omit internal assignment/SLA secrets  
-
-### 6.3 Exit criteria
-
-A0 green when all acceptance tests pass and a short threat-model note is added under `docs/` (or appendix in this plan) describing principal types and key capabilities.
+**Exit:** FINDINGS.CODEX C-03/C-06/H-05 closed.
 
 ---
 
-## 7. Gate A1 — Real osTicket fixture and schema-correct writes
+## 8. P2 — Existing-database compatibility (≈2 weeks)
 
-**Objective:** Native create/reply/note/update/bulk/merge work on a **fully bootstrapped** strict MySQL osTicket **v1.18.4** database with transactional integrity and stock semantics for numbering, topics, forms, events.
+**Objective:** T1 + T2 of the compatibility contract proven against a real stock database image.
 
-**Estimated effort:** 1.5–2.5 weeks  
+| # | Task | Files |
+|---|---|---|
+| P2.1 | **Stock fixture:** install osTicket v1.18.4 once (locally, PHP required once), `mysqldump` → commit `test/fixture/osticket-1.18.4-stock.sql`; bootstrap loads dump + seed deltas (admin/agent/customer/API keys) with `STRICT_TRANS_TABLES`; document regeneration in `docs/FIXTURE.md` | `scripts/fixture-bootstrap.js`, `test/fixture/`, `docker-compose.fixture.yml` |
+| P2.2 | **Dynamic forms read:** topic-aware field schema endpoint (public + staff) from `form`/`form_field` tables; SPA create form renders it | `src/controllers/topicController.js:113-159`, `src/routes/topics.js`, `src/public/js/spa.js:947-984` |
+| P2.3 | **Dynamic forms write:** validate answers server-side; write `form_entry` + `form_entry_values` + cdata projection inside the create transaction | `src/sdk/services/tickets.js:758-766`, `src/lib/legacyTicketApi.js:12-72` |
+| P2.4 | **Filter safe-interpretation:** read stock filter rows; apply actions we support (dept/priority/SLA/status/staff/team/topic/reject); **skip and log** unknown actions — never guess; apply inside the create transaction | `src/controllers/filterController.js`, `src/controllers/ticketController.js:131-164` |
+| P2.5 | **Update/bulk integrity:** lifecycle state + full event context in one transaction; stock sentinel values instead of NULL into NOT NULL columns | `src/sdk/services/tickets.js:923-1053`, `src/controllers/ticketController.js:853-873` |
+| P2.6 | **Merge off:** `MERGE_ENABLED=false` default; docs mark experimental; stock `ticket_pid` representation deferred past v1.0 | `src/config/index.js`, `src/routes/tickets.js:128-135` |
+| P2.7 | **Adopt-existing acceptance suite:** boot against the stock dump; read seeded history/forms/config; run full lifecycle; assert written rows are stock-shape (columns, events, form entries, sequences) | `test/integration/` |
 
-### 7.1 Fixture infrastructure
+**Acceptance (red → green):**
+- [ ] Full lifecycle (create/reply/note/update/bulk/close/reopen) green on stock dump under strict mode
+- [ ] Ticket created via topic with required custom fields → `form_entry`/`form_entry_values`/cdata rows present and stock-shaped; missing required field → validation error
+- [ ] Stock-authored filter with supported actions applies; filter with unsupported action skips with log, create succeeds
+- [ ] Failure injection mid-create/mid-update → no orphan/partial rows
+- [ ] Row-shape assertions: everything we write matches stock column expectations (the "PHP could still read this" proof, without running PHP)
 
-| # | Task | Notes |
-|---|------|-------|
-| A1.1 | Document supported target: **MySQL + osTicket v1.18.4** (replace “v1.8+” claims in README/SCHEMA) | Version detection optional later |
-| A1.2 | CI/local fixture: bootstrap stock install SQL + dynamic tables (`ticket__cdata`, forms) | Docker Compose or scripted mysql + ost install |
-| A1.3 | Strict SQL mode in fixture (`STRICT_TRANS_TABLES`, etc.) | Surfaces missing columns |
-| A1.4 | Optional: stock PHP container for bidirectional interop (Node↔PHP) | High value for A1 exit |
-
-### 7.2 Schema / write kernel
-
-| # | Task | Primary files | Notes |
-|---|------|---------------|-------|
-| A1.5 | Fix topic active/public selection (`flags` / `ispublic`, not `isactive`) | `sdk/services/tickets.js` | C-04 |
-| A1.6 | Include required `thread_entry.updated` and full event context columns | tickets service + bulk | C-05 |
-| A1.7 | Transactional ticket create: ticket + cdata + thread + first entry (+ collaborators) | SDK service | Rollback on any step |
-| A1.8 | Ticket numbers via `ost_sequence` / topic number format | SDK | Match stock padding/format |
-| A1.9 | Apply topic defaults: dept, status, priority, SLA, assignment, autorespond flags | create kernel | Controller currently discards some |
-| A1.10 | Filter actions: map only real ticket columns; priority via cdata/form path not fake `priority_id` column | `filterController`, tickets | |
-| A1.11 | Fix NULL inserts into required org/staff/dept columns | orgs, staff, depts services | |
-| A1.12 | Reply/note/update transactional where multi-write | tickets service | Event log after successful mutation |
-| A1.13 | Merge: complete event graph / collaborators semantics | tickets service | Document residual gaps if any |
-
-### 7.3 Acceptance tests
-
-- [ ] Create/reply/note/update/bulk/merge against clean v1.18.4 fixture in strict mode  
-- [ ] Failure injection after each create step → **no orphan** ticket/thread rows  
-- [ ] Topic inactive/private behavior matches stock flags  
-- [ ] Sequence-based ticket number format validated  
-- [ ] Bidirectional interop: Node create → PHP view/reply; PHP create → Node read/update (if PHP fixture available)  
-- [ ] Dynamic form / cdata write for default install forms  
-
-### 7.4 Exit criteria
-
-A1 green when native ticket lifecycle tests pass on the fixture without schema hacks, and create is a single transaction boundary.
+**Exit:** compatibility contract T1/T2 demonstrated by CI-runnable suite.
 
 ---
 
-## 8. Gate A2 — Official `POST /api/tickets.json` parity
+## 9. P3 — JSON REST contract and channels (≈1.5 weeks)
 
-**Objective:** Exact external JSON create compatibility with stock osTicket.
+**Objective:** the JSON API is the product; XML dies; retained legacy channels are honest and safe.
 
-**Estimated effort:** 3–5 days after A1  
+| # | Task | Files |
+|---|---|---|
+| P3.1 | **Delete XML:** remove `src/lib/legacyTicketXml.js`, `createLegacyXml` (`src/controllers/ticketController.js:466,616-657,895`), mount (`src/app.js:181-187`), OpenAPI path (`scripts/generate-openapi.js:1247-1266`), XML tests; keep `rawText10mb` (email uses it); regenerate `docs/openapi.json` | as listed |
+| P3.2 | **`tickets.json` pragmatics:** accept stock attachment map (`{filename: dataURL}`) alongside current shape; apply `alert`/`autorespond`; persist `priority` via form path; RFC2397 message bodies | `src/lib/legacyTicketApi.js`, `src/controllers/ticketController.js:480-496` |
+| P3.3 | **Email intake default-off:** `EMAIL_INTAKE_ENABLED=false`; enable-gate = mature MIME parser (e.g. `mailparser`), sender/collaborator authorization (never attribute unknown sender to owner), atomic Message-ID dedup with unique index, reply attachments persisted | `src/lib/legacyTicketEmail.js`, `src/controllers/ticketController.js:691-765`, `docs/mysql.sql:400-409` |
+| P3.4 | **Cron honesty:** document supported jobs (overdue via `est_duedate`, lock cleanup); failures observable in response/logs (not silent `Completed`); unsupported jobs listed as such | `src/lib/cron.js`, `src/controllers/ticketController.js:776-785`, `docs/PRODUCTION.md` |
+| P3.5 | **KB gates:** `enable_kb` enforced server-side + SPA nav; public FAQ/topic allowlists (no internal notes, SLA/assignment internals); server-complete pagination/search | `src/routes/faq.js`, `src/controllers/faqController.js:149-160`, `src/controllers/topicController.js:113-159`, `src/public/js/spa.js:1022-1127` |
+| P3.6 | **OpenAPI as contract:** single root server (full paths); conditional cookie+CSRF security modeled; `/auth/refresh` body documented; deterministic output (no timestamp); live request/response validation in tests; generated-client smoke (list/create/reply/close) against fixture | `scripts/generate-openapi.js`, `test/openapi.contract.test.js` |
+| P3.7 | **Drop `pg`:** remove dependency and dead dialect branches | `package.json`, `src/sdk/connection.js`, `src/sdk/`, `docs/sdk.md` |
 
-### 8.1 Tasks
+**Acceptance (red → green):**
+- [ ] `POST /api/tickets.xml` → 404; no XML code or docs remain
+- [ ] Stock-example `tickets.json` payloads (dynamic fields, attachment map, data-URL body, alert flags) → 201 + bare number, fields persisted
+- [ ] Email disabled → endpoint 503/404 documented; enabled in test: unknown sender rejected, nested MIME parsed, duplicate Message-ID idempotent
+- [ ] Cron job failure visible to caller/ops
+- [ ] `enable_kb=0` hides KB in API + SPA; FAQ search server-paginated past page 1
+- [ ] Generated client compiles and passes smoke against fixture; OpenAPI regeneration is diff-clean in CI
 
-| # | Task | Notes |
-|---|------|-------|
-| A2.1 | Dedicated route `POST /api/tickets.json` (not nested under native `/:id` router confusion) | Mount outside dual native mount |
-| A2.2 | Auth: active key, IP match, `can_create_tickets` only — **no native principal** | Stock-compatible 401 |
-| A2.3 | Parse stock fields: `name`, `email`, `subject`, `message`, `topicId`, `priority`, `source`, `alert`, `autorespond`, `ip`, attachments (RFC 2397), custom form fields, phone/notes | Map to create kernel |
-| A2.4 | Create/find user by email; apply filters; topic defaults | Reuse A1 kernel |
-| A2.5 | Response: **HTTP 201** with **bare ticket number body** (not JSON envelope) | Match stock |
-| A2.6 | Validation / error status codes differential vs stock | Document intentional deltas if any (prefer zero) |
-| A2.7 | Attachment subset on create (store in `file` / `file_chunk` or agreed equivalent) | May share A4 attachment module; minimum for stock corpus |
-
-### 8.2 Acceptance tests
-
-- [ ] Differential corpus: same payloads to stock v1.18.4 and Nodeticket; normalize generated IDs; compare outcomes  
-- [ ] Wrong key / inactive / wrong IP / missing capability → stock-compatible failure  
-- [ ] Valid create → 201 + number; ticket readable in PHP and Node  
-
-### 8.3 Exit criteria
-
-Official JSON column of the parity matrix is **green**.
+**Exit:** JSON-REST pillar done; only JSON channels remain.
 
 ---
 
-## 9. Gate A3 — Official XML, email MIME, and cron
+## 10. P4 — Core MCP (≈1.5–2 weeks)
 
-**Objective:** Complete stock HTTP surface.
+**Objective:** MCP becomes a supported, safe, first-class surface — the "pave the way" pillar delivered.
 
-**Estimated effort:** 1–2 weeks  
+| # | Task | Files |
+|---|---|---|
+| P4.1 | **OAuth hardening:** redirect URIs restricted (pre-registered via config + loopback/HTTPS rules; dynamic registration behind flag); consent screen (no silent approval); `state` required; codes single-use and bound to client+redirect+PKCE+principal | `src/mcp/oauth/register.js:11-27`, `authorize.js:19-87`, `token.js:26-51`, `store.js` |
+| P4.2 | **Principal safety:** reject API-key principals from MCP OAuth and every tool; MCP bearer carries `token_use='mcp'` + typed principal; validate purpose, live account state, and session-to-principal binding per request | `src/mcp/transport.js:35-121`, `src/middleware/auth.js:109-145`, `src/mcp/tools/*.js` |
+| P4.3 | **Scopes:** `tickets:read`, `tickets:write`, `directory:read`, `admin` mapped onto the P0 authz matrix; customer principals get publicOnly threads; staff get staff_scope | `src/mcp/oauth/`, `src/mcp/tools/tickets.js:16-400` |
+| P4.4 | **Toolset audit:** all 49 tools through authz service (P0.7 done; verify matrix coverage incl. 33 admin tools admin-gated); prune any tool that can't be safely scoped | `src/mcp/tools/` |
+| P4.5 | **Transport cleanup:** replace `res.writeHead` session-capture hack if SDK ≥1.27 allows; session idle/eviction documented; MCP server version string = package version | `src/mcp/transport.js` |
+| P4.6 | **Docs:** `docs/MCP.md` — enablement, client registration, scopes, Claude/inspector quickstart; restart semantics of in-memory OAuth store (accepted for v1.0; static client config recommended) | new `docs/MCP.md` |
 
-### 9.1 Tasks
+**Acceptance (red → green)** — the C-01 behavioral list:
+- [ ] Arbitrary-redirect registration rejected; code theft via attacker redirect fails
+- [ ] Authorization without consent interaction fails; missing `state` fails
+- [ ] Code replay fails; attacker-PKCE exchange of victim code fails
+- [ ] API key → MCP token or tool call → rejected
+- [ ] Customer MCP client cannot read internal notes; scoped-staff MCP client denied foreign-dept tickets (reuses P0 matrix tests)
+- [ ] Disabled account's MCP token stops working within documented bound
+- [ ] MCP inspector / real client end-to-end: authorize → list_tickets → create_ticket → reply
 
-| # | Task | Notes |
-|---|------|-------|
-| A3.1 | `POST /api/tickets.xml` — raw body parser + semantic equivalence to JSON | |
-| A3.2 | `POST /api/tickets.email` — MIME parse, new ticket vs reply threading, Message-ID dedup, attachments | Hardest channel |
-| A3.3 | `POST /api/tasks/cron` with `can_exec_cron`; body `Completed` on success | Stock path, not only `/api/v1/cron` |
-| A3.4 | Implement real cron jobs (minimum viable): TicketMonitor overdue flags; stub remaining jobs with honest status only if disabled by config | MailFetcher may start here or A4 |
-| A3.5 | Capability matrix tests for every official endpoint | Create-only vs cron-only keys |
-
-### 9.2 Acceptance tests
-
-- [ ] XML create parity corpus  
-- [ ] Email: new message creates ticket; reply to existing threads; duplicate Message-ID ignored  
-- [ ] Cron with valid key runs work; wrong capability 401  
-- [ ] Full official parity matrix green  
-
-### 9.3 Exit criteria
-
-| Official operation | Status required |
-|--------------------|-----------------|
-| `POST /api/tickets.json` | Green (A2) |
-| `POST /api/tickets.xml` | Green |
-| `POST /api/tickets.email` | Green |
-| `POST /api/tasks/cron` | Green |
+**Exit:** `MCP_ENABLED=true` is a supported production configuration; P0.1 assertion removed.
 
 ---
 
-## 10. Gate A4 — Native product API completeness
+## 11. P5 — Release engineering (≈1 week)
 
-**Objective:** Modern `/api/v1` is a trustworthy product API for UI, MCP, and CLI — attachments, notifications, SLA, tasks write, OpenAPI truth, mount hygiene.
+| # | Task | Files |
+|---|---|---|
+| P5.1 | **CI gates:** fixture job (stock dump, strict mode) required — unavailable infra fails the job, skips are not green; unit + integration + OpenAPI diff-clean + generated-client smoke | `.github/workflows/ci.yml` |
+| P5.2 | **Browser smoke (minimal):** Playwright Chromium, two specs — customer login→create→reply→detail; staff queue→detail→reply/note — no console errors; runs in CI | `test/browser/`, `package.json` (`test:browser`) |
+| P5.3 | **Versioning:** keep CalVer for the npm package (semver `1.0.0` would sort *below* published `2026.3.1` for range consumers); release = package `2026.x.y` + git tag `v1.0.0`; MCP server version reads package version | `package.json`, `src/mcp/transport.js` |
+| P5.4 | **Docs reconcile (H-06):** README/`docs/SCHEMA.md` claim exactly "osTicket v1.18.4 MySQL"; remove XML and PostgreSQL claims; `docs/sdk.md` PG sections removed; TODO files pruned to real remainder; `docs/PRODUCTION.md` final checklist (proxy config, email mode, Redis, cron scheduling, MCP enablement) | `README.md`, `docs/` |
+| P5.5 | **Secrets hygiene:** `.env.example` placeholders empty-required; production validation rejects known placeholder patterns | `.env.example`, `src/config/index.js:88-97` |
 
-**Estimated effort:** 1.5–2.5 weeks  
-
-### 10.1 Tasks
-
-| # | Task | Notes |
-|---|------|-------|
-| A4.1 | Attachment API: upload (create/reply), authorized download, thread association | Use osTicket file tables where possible |
-| A4.2 | Outbound email: new ticket auto-response, staff alerts, reply notifications via templates + SES (or SMTP config) | Wire `lib/email.js` + templates |
-| A4.3 | SLA: set `sla_id` / due dates from topic/plan on create; TicketMonitor marks overdue | Business hours if data present |
-| A4.4 | Staff/API create ticket **on behalf of** user (authenticated staff with permission) | Separate from API-key-as-admin anti-pattern |
-| A4.5 | Tasks write path: create/update/assign/close + authz | |
-| A4.6 | FAQ write API (CRUD) + ratings if schema supports | Feeds U4 admin |
-| A4.7 | Safe merge completion; search/pagination contracts documented | |
-| A4.8 | Custom form field schema endpoint for public create; server-side validation | |
-| A4.9 | OpenAPI regenerated from accepted runtime; generated-client smoke test | Fix path/base mismatches |
-| A4.10 | PostgreSQL: **fail fast** in config if dialect=pg (recommended) **or** separate implementation track | Do not advertise broken support |
-| A4.11 | Align rate limits, CSRF, session regeneration on login, idle timeout for HTML admin | Partial production hardening |
-| A4.12 | MCP tools use same authz helpers (no bypass) | |
-
-### 10.2 Acceptance tests
-
-- [ ] Attachment upload/download permission matrix (owner, staff, deny)  
-- [ ] Create/reply triggers expected email (mock transport OK)  
-- [ ] Overdue cron flips `isoverdue` when past due  
-- [ ] Staff create-on-behalf creates ticket owned by target user  
-- [ ] OpenAPI client can call list/create/reply/close against fixture  
-- [ ] Setting dialect to postgres fails at startup with clear error (if fail-fast path chosen)  
-
-### 10.3 Exit criteria (API ready for UI expansion)
-
-All of the following:
-
-- [ ] Purpose tokens cannot authenticate as access tokens; API keys are not native admins  
-- [ ] Customers cannot retrieve internal notes/events/private identity fields  
-- [ ] Staff visibility + role permissions enforced across REST, SSR, MCP  
-- [ ] KB disablement + public topic/form schema enforced  
-- [ ] Native create/read/reply/update pass on strict v1.18.4 fixture with rollback  
-- [ ] Official JSON/XML/email/cron parity matrix green  
-- [ ] OpenAPI describes live native API and client smoke passes  
-- [ ] Close/reopen named contracts correct  
-- [ ] Expanded suite (HTTP + DB + authz) remains green with existing unit tests  
-
-**At this point G1 (feature parity MVP) is substantially complete.** Remaining G2 work is UI depth and production polish.
+**Release checklist (tag `v1.0.0` when all true):**
+- [ ] P0–P4 acceptance lists green in CI (no green-by-skip)
+- [ ] Adopt-existing suite green on stock v1.18.4 dump, strict mode
+- [ ] MCP gate green and enabled in at least one staging config
+- [ ] Generated OpenAPI client smoke green
+- [ ] Browser smoke green
+- [ ] Docs/support claims match tested matrix; no XML/PG/v1.8+ references
+- [ ] `npm audit` reviewed; placeholder secrets rejected in production mode
 
 ---
 
-## 11. Gate U0 — UI safety and contract consumption
+## 12. Testing strategy
 
-**Objective:** Customer SPA and staff SSR consume **safe** contracts only; no new mutation surface until U1.
+| Layer | What | Phase |
+|---|---|---|
+| Unit | tokens, authz matrix logic, parsers, filter interpretation, form validation | ongoing |
+| HTTP behavioral | supertest-style against app + fixture; every acceptance checkbox above | P0+ |
+| Row-shape | assert written rows match stock schema expectations (the no-PHP compatibility proof) | P2 |
+| Contract | OpenAPI live validation + generated-client smoke | P3 |
+| MCP integration | OAuth flow + tool calls via MCP SDK client | P4 |
+| Browser smoke | 2 Chromium specs | P5 |
 
-**Estimated effort:** 3–5 days  
+CI target: `npm test` + `npm run test:http` (required, stock fixture) + `npm run openapi:generate --check` + `npm run test:mcp` + `npm run test:browser`.
 
-### 11.1 Tasks
-
-| # | Task | Notes |
-|---|------|-------|
-| U0.1 | SPA login: treat non-JSON/error responses correctly (no false success reload) | `spa.js` |
-| U0.2 | Render only public thread entries; never show notes as “support responses” | |
-| U0.3 | Named close/reopen API usage | Match A0.11 |
-| U0.4 | Pagination for tickets, thread, topics, FAQ (full pages, not first 25 only) | |
-| U0.5 | Public topic/form schema for create form; honor KB disable setting | |
-| U0.6 | Staff queue/detail **read** scoping already server-side (verify UI doesn’t assume global) | No new staff mutations yet |
-| U0.7 | CSRF headers on SPA session mutations | Pair with A0.12 |
-
-### 11.2 Exit criteria
-
-- [ ] Customer cannot see notes even if API bug reintroduced (defense in depth in UI)  
-- [ ] Login errors visible; reopen works  
-- [ ] Pagination reaches page 2+ for tickets/FAQ/topics  
+Fixture policy: one committed stock v1.18.4 dump; seed deltas add admin staff, limited agent, customer, two depts, topics with custom forms, roles, create-only/cron-only API keys. Regeneration documented, PHP needed only for regeneration, never in CI.
 
 ---
 
-## 12. Gate U1 — Staff operational vertical slice
-
-**Objective:** A real help desk: queue + one complete ticket-detail workflow, permission-checked and accessible.
-
-**Estimated effort:** 1–1.5 weeks  
-
-### 12.1 Queue
-
-- Search, status, department, assignee/team, priority, overdue filters  
-- Sort + query-preserving pagination  
-- Fix `staff=unassigned` vs `staff_id` handler mismatch  
-- Bulk ops gated by **permissions**, not only `isadmin`  
-
-### 12.2 Ticket detail (minimum ops)
-
-| Action | UI control | API |
-|--------|------------|-----|
-| Reply | Form + optional canned insert | `POST .../reply` |
-| Internal note | Distinct form/styling | `POST .../note` |
-| Assign / team | Selects | `PUT` fields |
-| Transfer dept | Select | `PUT` |
-| Status / close / reopen | Named actions | close/reopen endpoints or constrained PUT |
-| Audit feedback | Flash/banner | events (staff-only) |
-
-Do **not** ship note UI before C-03 / A0.5 is green.
-
-### 12.3 Accessibility (in-slice, not later)
-
-- Keyboard operable controls (no click-only table rows without row action)  
-- Visible focus  
-- Errors in `aria-live` regions  
-- Usable at 360px width  
-
-### 12.4 Exit criteria
-
-- [ ] Agent can triage: open queue → open ticket → reply → note → assign → close without raw API tools  
-- [ ] Denied permissions hide or disable controls **and** API returns 403  
-- [ ] Dept-scoped agent never sees foreign tickets in UI  
-
----
-
-## 13. Gate U2 — Attachments and notifications in UI
-
-**Objective:** Visible file + mail behavior for customer and staff.
-
-**Estimated effort:** 3–5 days  
-
-### 13.1 Tasks
-
-- Customer upload on create/reply; display on thread  
-- Staff upload/download on detail  
-- Size/type validation messaging  
-- Notification failure surfaced (e.g. “reply saved; email failed”) without rolling back ticket write unless policy says otherwise  
-- Email-created tickets/replies present cleanly in UI (A3)  
-
-### 13.2 Exit criteria
-
-- [x] Customer SPA: attach on create/reply; list + download on ticket detail; notify failure banner  
-- [x] Staff admin: attach list/download on detail; reply + standalone upload; notify failure flash  
-- [x] End-to-end attach on create and reply in fixture (`test/integration/http.fixture.test.js`)  
-- [x] Unauthorized download denied (401 no auth / 403 non-owner)  
-
----
-
-## 14. Gate U3 — Customer portal hardening
-
-**Objective:** MVP-safe customer experience.
-
-**Estimated effort:** 3–5 days  
-
-### 14.1 Tasks
-
-| Area | Work |
-|------|------|
-| Account | Discoverable register / verify / reset / profile / logout; single principal model |
-| Tickets | Search/filter + complete pagination; newest thread activity; load older |
-| Drafts | Preserve draft message across reauth when possible |
-| A11y | Keyboard FAQ/headings; live errors; responsive acceptance |
-| Session | Align client idle with server; coherent logout |
-
-### 14.2 Exit criteria
-
-- [x] Account flows discoverable: register, login, forgot/reset (HTML), profile link, logout; guest CTAs  
-- [x] Tickets: search + status filter + pagination; thread newest page + load older  
-- [x] Drafts: create + reply preserved in sessionStorage across reauth  
-- [x] Session idle uses `APP_CONFIG.idleTimeout`; warning + full logout  
-- [x] A11y: skip link, live regions, FAQ keyboard accordion, focus on headings, table/nav labels  
-- [ ] Automated a11y smoke (axe or equivalent) on login, list, detail, create — optional follow-up  
-- [ ] Full browser acceptance of FINDINGS.GROK §4.1 without console errors — manual  
-
----
-
-## 15. Gate U4 — Administration and production readiness
-
-**Objective:** Finish admin/KB gaps and production session/ops posture.
-
-**Estimated effort:** 1 week  
-
-### 15.1 Admin / config
-
-- FAQ CRUD + search UI (API from A4)  
-- Status/priority/forms/channels/saved queues as needed  
-- Keep existing P3 config pages; fix authz to match A0  
-- Optional: modularize god-router `src/routes/admin.js` (maintainability; not a feature gate)  
-
-### 15.2 Production
-
-- Durable session store (Redis/DB) for multi-instance  
-- Login session regeneration; logout + bearer revocation policy documented  
-- Safe production errors; pin/vend frontend CDN deps (ygdrassil)  
-- Cron deployment docs (external scheduler → official cron endpoint)  
-- Browser smoke (deferred; see §16.4)  
-
-### 15.3 Backlog (explicitly deferred after U4 unless needed)
-
-- Plugins / hooks / webhooks (docs P5)  
-- 2FA, LDAP, OAuth  
-- Referrals  
-- Ticket locks **hard-block** mode (soft locks shipped)  
-- Windows `npm run` CLI flag stripping (root TODO)  
-- Full business-hours SLA engine edge cases  
-- **Browser E2E** (Playwright or equivalent) — deferred; when scheduled, ship **smoke first**, full matrix optional (see §16.4)  
-
-### 15.4 Exit criteria
-
-- [x] Admin FAQ CRUD + search + categories (staff session; existing admin routes use staff session gate)  
-- [x] Production checklist documented (`docs/PRODUCTION.md` + README)  
-- [x] CI runs unit tests (`.github/workflows/ci.yml`); HTTP fixture job documented/optional  
-- [x] Safe production errors (escaped HTML, no stack leak); ygdrassil self-hosted pin  
-- [x] Session regenerate on login (existing); optional Redis store hook; cron ops docs  
-
----
-
-## 16. Testing strategy
-
-### 16.1 Layers
-
-| Layer | What | When |
-|-------|------|------|
-| Unit | Pure helpers (JWT claims, filter match, number format) | Ongoing |
-| HTTP behavioral | Supertest (or equivalent) against app + fixture DB | A0+ |
-| DB graph | Assert rows after create/merge/cron | A1+ |
-| Differential | Same payload stock PHP vs Node | A2–A3 |
-| Authz matrix | Principals × resources × allow/deny | A0, expand A4 |
-| Browser smoke | Playwright critical paths (Chromium) | Deferred |
-| Browser full matrix | + Firefox/WebKit, viewports, admin paths | Optional / on demand |
-| A11y | axe on key pages (can attach to smoke) | Deferred with browser |
-
-### 16.4 Browser E2E policy (decision — deferred implementation)
-
-**Decision (2026-07-17):** Prefer a **smoke suite as the default** when browser tests are added; keep **full coverage as an opt-in** path. Do not implement until explicitly scheduled.
-
-| Mode | Scope (when built) | When to run |
-|------|--------------------|-------------|
-| **Smoke (default)** | Chromium; customer paths: login → list → create → detail → reply; no console errors; optional axe on those pages | CI on PR / main (fast) |
-| **Full (optional)** | Smoke + Firefox + WebKit; desktop + narrow viewport; staff admin critical paths (queue, detail reply/note) | Nightly, manual, or `npm run test:browser:full` |
-
-Notes:
-
-- HTTP fixture tests remain the primary automated gate until browser smoke lands.  
-- Manual acceptance of FINDINGS.GROK §4.1 still useful before a first production pilot.  
-- Implementation sketch when unblocked: Playwright + fixture MySQL; scripts `test:browser` (smoke) and `test:browser:full`.
-
-### 16.2 Fixture policy
-
-1. Prefer **real schema** over mocks for ticket writes.  
-2. Seed: admin staff, limited agent, customer user, two depts, topics, roles, API keys (create-only, cron-only, full).  
-3. Each test file cleans or uses transactions where possible.  
-4. Never require production secrets; SES mocked.
-
-### 16.3 CI minimum (target)
-
-```
-npm test                  # unit
-npm run test:http         # fixture required
-npm run test:parity       # optional job with PHP container
-# later (deferred):
-# npm run test:browser      # smoke (default)
-# npm run test:browser:full # optional full matrix
-```
-
-Add scripts as gates land; do not block A0 on full parity job.
-
----
-
-## 17. Suggested PR / milestone breakdown
-
-Prefer small, reviewable PRs that leave `main` green.
-
-| Milestone | Gates | Example PR themes |
-|-----------|-------|-------------------|
-| **M0** | A0.1–A0.6, A0.11 | JWT token_use; customer allowlists; close/reopen policy |
-| **M1** | A0.4, A0.7–A0.10, A0.12–A0.13 | API keys; staff visibility; CSRF/mount hygiene |
-| **M2** | A1 | Fixture + transactional create kernel + schema fixes |
-| **M3** | A2 | Official JSON create + differential tests |
-| **M4** | A3 | XML + email + cron |
-| **M5** | A4 | Attachments, mail out, SLA, OpenAPI, tasks write |
-| **M6** | U0–U1 | Safe SPA + staff ops slice |
-| **M7** | U2–U3 | Attachments UI + customer hardening |
-| **M8** | U4 | Admin FAQ + production readiness |
-
-Each PR: tests first when practical; update this plan’s checkboxes or linked issue tracker.
-
----
-
-## 18. Risk register
-
-| Risk | Mitigation |
-|------|------------|
-| Fixture/bootstrap cost higher than coding | Invest early in Docker Compose; block A1 until green |
-| osTicket schema subtleties (forms, cdata, events) | Prefer reading stock PHP create path; differential tests |
-| Scope creep into plugins/LDAP | Keep deferred list explicit; reject mid-gate expansions |
-| Admin.js size / merge conflicts | Split by domain only after U1 if pain is high |
-| Dual SPA vs SSR confusion | Keep customer SPA + staff SSR; one staff mutation surface |
-| Email deliverability | Mock in tests; document SES/SMTP config for ops |
-| Shared DB with live PHP osTicket | A1 bidirectional tests; never invent columns |
-
----
-
-## 19. Ownership of findings reconciliation
-
-When FINDINGS.GROK and FINDINGS.CODEX disagree, **prefer CODEX** for:
-
-- Severity of auth/API-key issues  
-- Schema correctness of native create  
-- CSRF diagnosis (middleware works; **coverage/mounting** is the bug)  
-- Customer UI “MVP-safe” claim (not safe until privacy + reopen fixed)  
-- Delivery sequence (A0 before UI expansion)
-
-Prefer **GROK** for:
-
-- Breadth of product roadmap narrative  
-- Staff vs customer UI gap framing  
-- Scorecard communication to stakeholders  
-
-This PLAN incorporates both: CODEX order, GROK product completeness after A4.
-
----
-
-## 20. Immediate next actions (start here)
-
-1. **Scaffold HTTP test harness** + empty fixture compose file (even if tests fail).  
-2. **A0.1–A0.3** JWT `token_use` + fail-closed principals (highest security ROI).  
-3. **A0.5–A0.6** customer note/event isolation.  
-4. **A0.4** API-key capability isolation.  
-5. **A1.1–A1.2** pin v1.18.4 and bootstrap fixture.  
-6. Do not start staff reply UI until A0 staff visibility + note isolation are green.
-
----
-
-## 21. Success scorecard (revisit after each milestone)
-
-| Dimension | Baseline (reviews) | Target after A4 | Target after U4 |
-|-----------|--------------------|-----------------|-----------------|
-| Official HTTP API | Fail / ~0% | Full green matrix | Full green |
-| Native ticket writes | Blocker / broken schema | Strict fixture green | Green |
-| Auth / API keys | Critical fail | Capability-correct | Hardened sessions |
-| Customer privacy | High fail | Allowlisted DTOs | UI + API defense |
-| Staff RBAC / visibility | Unenforced | Enforced all surfaces | UI matches |
-| Attachments | Absent | API green | UI green |
-| Email / SLA | Placeholder | Outbound + overdue | UX for failures |
-| Customer UI | Not MVP-safe | Safe contracts (U0) | Hardened (U3) |
-| Staff UI | Config-rich, ops-thin | — | Operational (U1+) |
-| Tests | 45 unit-ish | HTTP+DB+authz suite | + browser/a11y |
-| OpenAPI | Drifted | Regenerated + smoke | Maintained |
-
----
-
-## 22. Appendix — Official parity matrix (tracking)
-
-| Operation | Auth | Nodeticket target | Gate |
-|-----------|------|-------------------|------|
-| `POST /api/tickets.json` | Key + IP + `can_create_tickets` | 201 bare number; stock fields | A2 |
-| `POST /api/tickets.xml` | same | Semantic = JSON | A3 |
-| `POST /api/tickets.email` | same | MIME create/reply/dedup | A3 |
-| `POST /api/tasks/cron` | Key + IP + `can_exec_cron` | Body `Completed`; real jobs | A3 |
-
-## 23. Appendix — Key file index
-
-| Path | Role in plan |
-|------|----------------|
-| `src/middleware/auth.js` | A0 JWT, keys, visibility, permissions |
-| `src/controllers/authController.js` | Token issuance claims |
-| `src/controllers/ticketController.js` | Native + legacy adapters; close/reopen |
-| `src/sdk/services/tickets.js` | Create kernel, thread, merge |
-| `src/routes/tickets.js` | Route auth chains |
-| `src/app.js` | Mounts, CSRF order, rate limits |
-| `src/middleware/csrf.js` | Double-submit CSRF |
-| `src/lib/email.js` | Outbound transport |
-| `src/controllers/systemController.js` | Cron jobs |
-| `src/routes/admin.js` | Staff SSR queue/detail |
-| `src/public/js/spa.js` | Customer portal |
-| `docs/openapi.json` | Contract (regenerate A4) |
-| `docs/mysql.sql` / `docs/SCHEMA.md` | Schema reference (pin version) |
-| `plan/FINDINGS.CODEX.md` | Evidence & acceptance detail |
-| `plan/FINDINGS.GROK.md` | Product gap analysis |
-
----
-
-## 24. Changelog
+## 13. Changelog
 
 | Date | Change |
-|------|--------|
-| 2026-07-16 | Initial master plan from CODEX + GROK findings and project docs |
-| 2026-07-16 | **A0 partially landed in code:** JWT `token_use`, API-key isolation, customer thread/event privacy, staff dept visibility + `requirePermission` on note/merge, named close/reopen, session CSRF on API, legacy `/api` mount limited to `tickets.json`, unit tests + `docker-compose.fixture.yml`. Remaining A0 polish: org/dept profile privacy (A0.9), KB/topic public allowlists (A0.10), production error hardening (A0.14), HTTP integration tests with fixture. |
-| 2026-07-16 | **A1 core write kernel landed:** transactional ticket create (ticket+cdata+thread+entry+event); `ost_sequence` numbering + topic `number_format`; topic defaults (dept/staff/team/sla/status) + SLA due dates; `thread_entry.updated` + full `thread_event` context columns; reply/note transactional; org/staff/dept NOT NULL defaults; unit tests `test/sdk.tickets.create-kernel.test.js`; fixture docs `docs/FIXTURE.md`. Remaining A1: scripted v1.18.4 bootstrap + live-DB integration + PHP interop. |
-| 2026-07-16 | **A2 official JSON create landed:** `POST /api/tickets.json` gated by `X-API-Key` + `can_create_tickets` (plain-text 401); find/create user by email; filters; create kernel with private topics + optional topicId; RFC2397 attachments to file tables; **HTTP 201 + bare ticket number** body. Helpers in `src/lib/legacyTicketApi.js`. Tests: `test/legacy.ticket-api.test.js`. Remaining A2 polish: live differential corpus vs stock PHP. XML/email/cron → A3. |
-| 2026-07-16 | **A3 official surface landed:** `POST /api/tickets.xml` (XML parse → same create kernel); `POST /api/tickets.email` (MIME parse, Message-ID dedup, In-Reply-To/References/subject threading reply, new ticket + mid log); `POST /api/tasks/cron` with `can_exec_cron` → body `Completed` + TicketMonitor overdue update; native `/api/v1/cron` shares jobs. Libs: `legacyTicketXml`, `legacyTicketEmail`, `cron`. Tests: `test/legacy.a3-xml-email-cron.test.js` (91 total). |
-| 2026-07-16 | **A4 native product API landed (partial):** PG fail-fast; staff create-on-behalf (`user_id`); attachment list/download/upload + reply attachments; ticket create/reply notification hooks (templates+SES/mock); tasks create/update/close; FAQ staff CRUD; `docs/API-A4.md`. Tests: `test/a4.product-api.test.js` (97 total). Remaining A4: full OpenAPI regen, custom form schema endpoint, merge polish, MCP authz audit, login/CSRF deep triage (deferred). |
-| 2026-07-16 | **U0/U1 staff ops UI:** Admin ticket queue (search, status, dept, assignee, unassigned fix, filter-preserving pagination, staff visibility scope); ticket detail ops (reply + canned, internal note, assign/team/dept, close/reopen); SPA ticket list pagination + status filter + keyboard row open. Login triage still deferred. |
-| 2026-07-17 | **MySQL fixture + HTTP integration green:** Docker compose MySQL:8 on :3307; `scripts/fixture-bootstrap.js` applies `docs/mysql.sql` + seed (admin/customer/API key); `npm run test:http` — 12/12 pass (login, create/reply/close/reopen, note privacy, tickets.json/xml, cron Completed, purpose JWT isolation). Schema fixes: backtick `mid`, list.configuration no TEXT default. App exports `{ app, start }` for tests. |
-| 2026-07-17 | **U2 attachments + notify UI:** Customer SPA file upload on create/reply (RFC2397 data URLs), attachment list + authenticated download, notification failure banners. Staff admin ticket detail: attachment panel, per-entry links, reply attachments, standalone upload form, warn flash when email notify fails (write not rolled back). CSS in `styles.css` / `admin.css`. |
-| 2026-07-17 | **U2 fixture HTTP attaches:** create+reply with data-URL files → list → download bytes; unauth download 401; non-owner JWT 403. Suite is 14 tests (skip when fixture down). |
-| 2026-07-17 | **U3 customer portal hardening + ygdrassil pin:** CDN `ygdrassil@2026.7.13`. SPA: guest register/login CTAs, forgot-password links, profile nav, ticket search/filter/pagination, thread load-older (newest page first), create/reply drafts in sessionStorage, idle timeout aligned to server + full logout, skip-link / live errors / FAQ keyboard a11y. |
-| 2026-07-17 | **U4 admin FAQ + production readiness:** Admin FAQ list/search/create/edit/delete + categories; staff FAQ API lists drafts; errorHandler escapes HTML and hides internal messages in production; ygdrassil self-hosted under `public/vendor/ygdrassil` with CDN fallback; optional Redis session store; `docs/PRODUCTION.md`; README ops links; GitHub Actions unit CI. |
-| 2026-07-17 | **Soft ticket locks (stock semantics):** `lib/ticketLocks.js` — mode from `ticket_lock` (0/1/2) + `autolock_minutes`; acquire/renew/release on `lock` + `ticket.lock_id`; soft-touch on staff write paths (never blocks); admin banner; API `GET/POST .../lock` + release; cron `LockCleanup`; settings for mode/minutes. Policy: soft warn, on-first-edit (activity). Tests: `test/ticket.locks.test.js`. |
-| 2026-07-17 | **Redis sessions as optional peers:** `redis` + `connect-redis` in `peerDependencies` with `peerDependenciesMeta.optional`; MemoryStore remains default. `lib/sessionStore.js` loads peers only when `SESSION_STORE=redis` + `REDIS_URL`; clear fallback warnings. Docs in PRODUCTION.md / README. |
-| 2026-07-17 | **Browser E2E policy (deferred):** Smoke = default (Chromium critical customer paths; optional axe). Full matrix = optional (Firefox/WebKit, viewports, admin). No Playwright suite yet; HTTP fixture stays primary gate. |
-| 2026-07-17 | **OpenAPI regen:** `scripts/generate-openapi.js` + `npm run openapi:generate` → `docs/openapi.json` (OpenAPI 3.0.3, v matching package). Native `/api/v1` paths (auth, tickets+attachments+locks, users, staff, depts, teams, orgs, topics, SLA, FAQ CRUD, tasks write, roles, settings, templates, canned, filters, system) + official FOSS `/api/tickets.json|.xml|.email` and `/api/tasks/cron`. |
-
----
-
-*Execute top-down by gate. Update checkboxes and scorecard as milestones land. Prefer fixing trust and schema before shipping more UI surface area.*
+|---|---|
+| 2026-07-17 | v1.0 plan replaces the 2026-07-16 parity-first plan. Scope reframed: compatibility with existing databases instead of recreation of osTicket behavior; XML dropped; JSON REST + core MCP become pillars; FINDINGS.CODEX findings dispositioned per §3. Prior A0–A4/U0–U4 progress retained (see git history of this file for the full gate changelog). |
