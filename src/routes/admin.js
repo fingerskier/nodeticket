@@ -281,7 +281,7 @@ router.get('/', asyncHandler(async (req, res) => {
         <div class="quick-actions">
           <a href="/admin/tickets" class="action-btn">All Tickets</a>
           <a href="/admin/tickets?staff_id=${staffId}" class="action-btn">My Tickets</a>
-          <a href="/admin/tickets?status=open&staff=unassigned" class="action-btn">Unassigned</a>
+          <a href="/admin/tickets?status=open&staff_id=unassigned" class="action-btn">Unassigned</a>
           <a href="/admin/tickets?status=overdue" class="action-btn">Overdue</a>
         </div>
       </section>
@@ -306,16 +306,52 @@ router.get('/', asyncHandler(async (req, res) => {
 }));
 
 /**
- * Tickets list
+ * Build query string preserving filters (for pagination links).
+ */
+function ticketListQuery(query, overrides = {}) {
+  const q = { ...query, ...overrides };
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(q)) {
+    if (v !== undefined && v !== null && v !== '') params.set(k, String(v));
+  }
+  const s = params.toString();
+  return s ? `?${s}` : '';
+}
+
+/**
+ * Tickets list — staff queue with filters, search, scoped visibility
  */
 router.get('/tickets', asyncHandler(async (req, res) => {
   const base = await getAdminData(req);
-  const { status, dept_id, staff_id, page = 1 } = req.query;
+  const sessionUser = req.session.user;
+  // Accept staff=unassigned (legacy dashboard link) as staff_id=unassigned
+  const staffFilter = req.query.staff_id || req.query.staff || '';
+  const { status, dept_id, team_id, search, page = 1 } = req.query;
   const limit = 25;
-  const offset = (parseInt(page, 10) - 1) * limit;
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const offset = (pageNum - 1) * limit;
 
   let ticketsHtml = '<p>No tickets found.</p>';
   let pagination = '';
+  let total = 0;
+
+  // Load filter option lists
+  let deptOptions = '';
+  let staffOptionsFilter = '';
+  try {
+    const depts = await db.query(
+      `SELECT id, name FROM ${db.table('department')} ORDER BY name`
+    );
+    deptOptions = depts.map((d) =>
+      `<option value="${d.id}" ${String(dept_id) === String(d.id) ? 'selected' : ''}>${escapeHtml(d.name)}</option>`
+    ).join('');
+    const staffRows = await db.query(
+      `SELECT staff_id, firstname, lastname FROM ${db.table('staff')} WHERE isactive = 1 ORDER BY firstname`
+    );
+    staffOptionsFilter = staffRows.map((s) =>
+      `<option value="${s.staff_id}" ${String(staffFilter) === String(s.staff_id) ? 'selected' : ''}>${escapeHtml(`${s.firstname || ''} ${s.lastname || ''}`.trim())}</option>`
+    ).join('');
+  } catch { /* ignore */ }
 
   try {
     let sql = `
@@ -333,6 +369,16 @@ router.get('/tickets', asyncHandler(async (req, res) => {
     `;
     const params = [];
 
+    // Staff visibility (non-admin)
+    if (!sessionUser.isAdmin) {
+      const { staffListVisibilitySql } = require('../lib/authz');
+      const vis = staffListVisibilitySql(sessionUser, 't');
+      if (vis) {
+        sql += vis.clause;
+        params.push(...vis.params);
+      }
+    }
+
     if (status === 'open') {
       sql += ` AND ts.state = 'open'`;
     } else if (status === 'closed') {
@@ -346,16 +392,26 @@ router.get('/tickets', asyncHandler(async (req, res) => {
       params.push(dept_id);
     }
 
-    if (staff_id === 'unassigned') {
-      sql += ` AND (t.staff_id = 0 OR t.staff_id IS NULL)`;
-    } else if (staff_id) {
-      sql += ` AND t.staff_id = ?`;
-      params.push(staff_id);
+    if (team_id) {
+      sql += ` AND t.team_id = ?`;
+      params.push(team_id);
     }
 
-    // Get total count
+    if (staffFilter === 'unassigned') {
+      sql += ` AND (t.staff_id = 0 OR t.staff_id IS NULL)`;
+    } else if (staffFilter) {
+      sql += ` AND t.staff_id = ?`;
+      params.push(staffFilter);
+    }
+
+    if (search && String(search).trim()) {
+      sql += ` AND (t.number LIKE ? OR tc.subject LIKE ? OR u.name LIKE ?)`;
+      const term = `%${String(search).trim()}%`;
+      params.push(term, term, term);
+    }
+
     const countSql = sql.replace(/SELECT .*? FROM/s, 'SELECT COUNT(*) as count FROM');
-    const total = parseInt((await db.queryOne(countSql, params))?.count || 0, 10);
+    total = parseInt((await db.queryOne(countSql, params))?.count || 0, 10);
 
     sql += ` ORDER BY t.created DESC LIMIT ? OFFSET ?`;
     params.push(limit, offset);
@@ -367,7 +423,7 @@ router.get('/tickets', asyncHandler(async (req, res) => {
         <table class="data-table">
           <thead>
             <tr>
-              ${base.isAdmin ? '<th><input type="checkbox" id="select-all"></th>' : ''}
+              ${base.isAdmin ? '<th><input type="checkbox" id="select-all" aria-label="Select all tickets"></th>' : ''}
               <th>Ticket #</th>
               <th>Subject</th>
               <th>User</th>
@@ -380,11 +436,11 @@ router.get('/tickets', asyncHandler(async (req, res) => {
           <tbody>
             ${tickets.map(t => `
               <tr class="${t.isoverdue ? 'row-overdue' : ''}">
-                ${base.isAdmin ? `<td><input type="checkbox" class="ticket-select" value="${t.ticket_id}"></td>` : ''}
+                ${base.isAdmin ? `<td><input type="checkbox" class="ticket-select" value="${t.ticket_id}" aria-label="Select ticket ${escapeHtml(t.number)}"></td>` : ''}
                 <td><a href="/admin/tickets/${t.ticket_id}">${escapeHtml(t.number)}</a></td>
-                <td>${escapeHtml(t.subject || 'No Subject')}</td>
+                <td><a href="/admin/tickets/${t.ticket_id}">${escapeHtml(t.subject || 'No Subject')}</a></td>
                 <td>${escapeHtml(t.user_name || 'Unknown')}</td>
-                <td><span class="status status-${t.status_state}">${t.status_name}</span></td>
+                <td><span class="status status-${t.status_state}">${escapeHtml(t.status_name || '')}</span></td>
                 <td>${escapeHtml(t.staff_name || 'Unassigned')}</td>
                 <td>${escapeHtml(t.dept_name || 'N/A')}</td>
                 <td>${formatDate(t.created)}</td>
@@ -394,16 +450,18 @@ router.get('/tickets', asyncHandler(async (req, res) => {
         </table>
       `;
 
-      // Pagination
       const totalPages = Math.ceil(total / limit);
       if (totalPages > 1) {
+        const filterQ = { status, dept_id, team_id, staff_id: staffFilter, search };
         pagination = `
-          <div class="pagination">
-            ${parseInt(page, 10) > 1 ? `<a href="?page=${parseInt(page, 10) - 1}">&laquo; Previous</a>` : ''}
-            <span>Page ${page} of ${totalPages}</span>
-            ${parseInt(page, 10) < totalPages ? `<a href="?page=${parseInt(page, 10) + 1}">Next &raquo;</a>` : ''}
+          <div class="pagination" role="navigation" aria-label="Ticket pages">
+            ${pageNum > 1 ? `<a href="${ticketListQuery(filterQ, { page: pageNum - 1 })}">&laquo; Previous</a>` : '<span class="disabled">&laquo; Previous</span>'}
+            <span>Page ${pageNum} of ${totalPages} (${total} tickets)</span>
+            ${pageNum < totalPages ? `<a href="${ticketListQuery(filterQ, { page: pageNum + 1 })}">Next &raquo;</a>` : '<span class="disabled">Next &raquo;</span>'}
           </div>
         `;
+      } else if (total > 0) {
+        pagination = `<div class="pagination"><span>${total} ticket${total === 1 ? '' : 's'}</span></div>`;
       }
     }
   } catch (e) {
@@ -422,7 +480,7 @@ router.get('/tickets', asyncHandler(async (req, res) => {
   const bulkBar = base.isAdmin ? `
     <div id="bulk-actions" class="bulk-action-bar" style="display:none;position:sticky;top:0;background:#fff;padding:0.5em;border:1px solid #ddd;margin-bottom:1em;z-index:10">
       <span id="selected-count">0</span> selected
-      <select id="bulk-assign-staff"><option value="">Select staff…</option>${staffOpts}</select>
+      <select id="bulk-assign-staff" aria-label="Assign staff"><option value="">Select staff…</option>${staffOpts}</select>
       <button type="button" class="btn" onclick="bulkAction('assign')">Assign</button>
       <button type="button" class="btn" onclick="bulkAction('close')">Close</button>
       <button type="button" class="btn btn-danger" onclick="if(confirm('Delete selected tickets?')) bulkAction('delete')">Delete</button>
@@ -471,15 +529,30 @@ router.get('/tickets', asyncHandler(async (req, res) => {
   ` : '';
 
   const content = `
-    <div class="filters">
-      <form method="GET" class="filter-form">
-        <select name="status">
+    <div class="filters ticket-filters">
+      <form method="GET" class="filter-form" action="/admin/tickets" role="search">
+        <label class="sr-only" for="filter-search">Search</label>
+        <input type="search" id="filter-search" name="search" value="${escapeHtml(search || '')}" placeholder="Search #, subject, user…" class="filter-search">
+        <label class="sr-only" for="filter-status">Status</label>
+        <select id="filter-status" name="status">
           <option value="">All Statuses</option>
           <option value="open" ${status === 'open' ? 'selected' : ''}>Open</option>
           <option value="closed" ${status === 'closed' ? 'selected' : ''}>Closed</option>
           <option value="overdue" ${status === 'overdue' ? 'selected' : ''}>Overdue</option>
         </select>
-        <button type="submit" class="btn">Filter</button>
+        <label class="sr-only" for="filter-dept">Department</label>
+        <select id="filter-dept" name="dept_id">
+          <option value="">All Departments</option>
+          ${deptOptions}
+        </select>
+        <label class="sr-only" for="filter-staff">Assignee</label>
+        <select id="filter-staff" name="staff_id">
+          <option value="">All Assignees</option>
+          <option value="unassigned" ${staffFilter === 'unassigned' ? 'selected' : ''}>Unassigned</option>
+          ${staffOptionsFilter}
+        </select>
+        <button type="submit" class="btn btn-primary">Filter</button>
+        <a href="/admin/tickets" class="btn">Reset</a>
       </form>
     </div>
     ${bulkBar}
@@ -492,11 +565,14 @@ router.get('/tickets', asyncHandler(async (req, res) => {
 }));
 
 /**
- * View ticket
+ * View ticket + operational forms (U1)
  */
 router.get('/tickets/:id', asyncHandler(async (req, res) => {
   const base = await getAdminData(req);
+  const sessionUser = req.session.user;
   const { id } = req.params;
+  const flash = req.query.msg ? `<div class="alert alert-success" role="status">${escapeHtml(req.query.msg)}</div>` : '';
+  const errFlash = req.query.error ? `<div class="alert alert-danger" role="alert">${escapeHtml(req.query.error)}</div>` : '';
 
   try {
     const ticket = await db.queryOne(`
@@ -526,7 +602,14 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
       return res.send(renderAdminPage('Ticket Not Found', '<p>Ticket not found.</p>', base, 'tickets'));
     }
 
-    // Get thread entries
+    // Access check for non-admin staff
+    if (!sessionUser.isAdmin) {
+      const { staffCanAccessTicket } = require('../lib/authz');
+      if (!staffCanAccessTicket(sessionUser, ticket)) {
+        return res.status(403).send(renderAdminPage('Access Denied', '<p class="error">You do not have access to this ticket.</p><p><a href="/admin/tickets" class="btn">Back</a></p>', base, 'tickets'));
+      }
+    }
+
     const entries = await db.query(`
       SELECT te.*, s.firstname, s.lastname, u.name as user_name
       FROM ${db.table('thread_entry')} te
@@ -536,32 +619,105 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
       ORDER BY te.created ASC
     `, [ticket.thread_id]);
 
+    const [staffRows, deptRows, teamRows, cannedRows] = await Promise.all([
+      db.query(`SELECT staff_id, firstname, lastname FROM ${db.table('staff')} WHERE isactive = 1 ORDER BY firstname`).catch(() => []),
+      db.query(`SELECT id, name FROM ${db.table('department')} ORDER BY name`).catch(() => []),
+      db.query(`SELECT team_id, name FROM ${db.table('team')} ORDER BY name`).catch(() => []),
+      db.query(`SELECT canned_id, title, response FROM ${db.table('canned_response')} WHERE isenabled = 1 ORDER BY title`).catch(() => []),
+    ]);
+
+    const csrf = base.csrfToken || '';
+    const staffOpts = staffRows.map((s) =>
+      `<option value="${s.staff_id}" ${s.staff_id === ticket.staff_id ? 'selected' : ''}>${escapeHtml(`${s.firstname || ''} ${s.lastname || ''}`.trim())}</option>`
+    ).join('');
+    const deptOpts = deptRows.map((d) =>
+      `<option value="${d.id}" ${d.id === ticket.dept_id ? 'selected' : ''}>${escapeHtml(d.name)}</option>`
+    ).join('');
+    const teamOpts = teamRows.map((t) =>
+      `<option value="${t.team_id}" ${t.team_id === ticket.team_id ? 'selected' : ''}>${escapeHtml(t.name)}</option>`
+    ).join('');
+    const cannedOpts = cannedRows.map((c) =>
+      `<option value="${c.canned_id}" data-body="${escapeHtml(c.response || '')}">${escapeHtml(c.title)}</option>`
+    ).join('');
+
+    const isClosed = ticket.status_state === 'closed';
+
     const content = `
+      ${flash}${errFlash}
       <div class="ticket-detail">
-        <div class="ticket-meta">
-          <p><strong>Status:</strong> <span class="status status-${ticket.status_state}">${ticket.status_name}</span></p>
-          <p><strong>User:</strong> ${escapeHtml(ticket.user_name)} &lt;${escapeHtml(ticket.user_email)}&gt;</p>
+        <div class="ticket-detail-header">
+          <div>
+            <p class="ticket-number-label">#${escapeHtml(ticket.number)}</p>
+            <h2>${escapeHtml(ticket.subject || 'No Subject')}</h2>
+          </div>
+          <p><a href="/admin/tickets" class="btn">&larr; Back to Tickets</a></p>
+        </div>
+
+        <div class="ticket-meta ticket-meta-grid">
+          <p><strong>Status:</strong> <span class="status status-${ticket.status_state}">${escapeHtml(ticket.status_name || '')}</span>
+            ${ticket.isoverdue ? ' <span class="badge badge-danger">Overdue</span>' : ''}</p>
+          <p><strong>User:</strong> ${escapeHtml(ticket.user_name || '')} &lt;${escapeHtml(ticket.user_email || '')}&gt;</p>
           <p><strong>Department:</strong> ${escapeHtml(ticket.dept_name || 'N/A')}</p>
           <p><strong>Assigned To:</strong> ${escapeHtml(ticket.staff_name || 'Unassigned')}</p>
           ${ticket.team_name ? `<p><strong>Team:</strong> ${escapeHtml(ticket.team_name)}</p>` : ''}
-          <p><strong>Priority:</strong> <span style="color: ${ticket.priority_color}">${ticket.priority_name || 'Normal'}</span></p>
+          <p><strong>Priority:</strong> <span style="color: ${ticket.priority_color || '#666'}">${escapeHtml(ticket.priority_name || 'Normal')}</span></p>
           ${ticket.sla_name ? `<p><strong>SLA:</strong> ${escapeHtml(ticket.sla_name)}</p>` : ''}
           <p><strong>Created:</strong> ${formatDate(ticket.created)}</p>
           ${ticket.duedate ? `<p><strong>Due Date:</strong> ${formatDate(ticket.duedate)}</p>` : ''}
           ${ticket.closed ? `<p><strong>Closed:</strong> ${formatDate(ticket.closed)}</p>` : ''}
         </div>
 
-        <div class="ticket-subject">
-          <h2>${escapeHtml(ticket.subject || 'No Subject')}</h2>
+        <div class="ticket-ops-panel">
+          <h3>Ticket actions</h3>
+          <div class="ops-grid">
+            <form method="POST" action="/admin/tickets/${id}/update" class="ops-form">
+              <input type="hidden" name="_csrf" value="${csrf}">
+              <h4>Assign / Transfer</h4>
+              <div class="form-group">
+                <label for="staff_id">Assignee</label>
+                <select name="staff_id" id="staff_id">
+                  <option value="0">Unassigned</option>
+                  ${staffOpts}
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="team_id">Team</label>
+                <select name="team_id" id="team_id">
+                  <option value="0">None</option>
+                  ${teamOpts}
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="dept_id">Department</label>
+                <select name="dept_id" id="dept_id">${deptOpts}</select>
+              </div>
+              <button type="submit" class="btn btn-primary">Save assignment</button>
+            </form>
+
+            <div class="ops-form">
+              <h4>Status</h4>
+              ${!isClosed ? `
+                <form method="POST" action="/admin/tickets/${id}/close" style="display:inline">
+                  <input type="hidden" name="_csrf" value="${csrf}">
+                  <button type="submit" class="btn btn-danger">Close ticket</button>
+                </form>
+              ` : `
+                <form method="POST" action="/admin/tickets/${id}/reopen" style="display:inline">
+                  <input type="hidden" name="_csrf" value="${csrf}">
+                  <button type="submit" class="btn btn-success">Reopen ticket</button>
+                </form>
+              `}
+            </div>
+          </div>
         </div>
 
         <div class="thread">
           <h3>Thread</h3>
-          ${entries.map(e => `
+          ${entries.length === 0 ? '<p class="empty-thread">No messages yet.</p>' : entries.map(e => `
             <div class="thread-entry thread-entry-${e.type}">
               <div class="entry-header">
                 <strong>${getEntryPoster(e)}</strong>
-                <span class="entry-type">${getEntryType(e.type)}</span>
+                <span class="entry-type entry-type-${e.type}">${getEntryType(e.type)}</span>
                 <span class="entry-date">${formatDate(e.created)}</span>
               </div>
               ${e.title ? `<div class="entry-title">${escapeHtml(e.title)}</div>` : ''}
@@ -570,14 +726,195 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
           `).join('')}
         </div>
 
-        <p><a href="/admin/tickets" class="btn">&larr; Back to Tickets</a></p>
+        <div class="ticket-compose ops-grid">
+          <form method="POST" action="/admin/tickets/${id}/reply" class="ops-form" id="reply-form">
+            <input type="hidden" name="_csrf" value="${csrf}">
+            <h4>Public reply</h4>
+            ${cannedRows.length ? `
+              <div class="form-group">
+                <label for="canned_reply">Canned response</label>
+                <select id="canned_reply" aria-label="Insert canned response">
+                  <option value="">— Insert canned response —</option>
+                  ${cannedOpts}
+                </select>
+              </div>
+            ` : ''}
+            <div class="form-group">
+              <label for="reply_message">Message</label>
+              <textarea id="reply_message" name="message" rows="5" required placeholder="Reply to the customer…"></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary">Send reply</button>
+          </form>
+
+          <form method="POST" action="/admin/tickets/${id}/note" class="ops-form">
+            <input type="hidden" name="_csrf" value="${csrf}">
+            <h4>Internal note</h4>
+            <p class="text-muted">Not visible to the customer.</p>
+            <div class="form-group">
+              <label for="note_title">Title (optional)</label>
+              <input type="text" id="note_title" name="title" placeholder="Note title">
+            </div>
+            <div class="form-group">
+              <label for="note_body">Note</label>
+              <textarea id="note_body" name="note" rows="5" required placeholder="Internal notes…"></textarea>
+            </div>
+            <button type="submit" class="btn">Add note</button>
+          </form>
+        </div>
       </div>
+      <script>
+        (function() {
+          const sel = document.getElementById('canned_reply');
+          const ta = document.getElementById('reply_message');
+          if (sel && ta) {
+            sel.addEventListener('change', function() {
+              const opt = sel.options[sel.selectedIndex];
+              const body = opt.getAttribute('data-body') || '';
+              if (body) {
+                ta.value = (ta.value ? ta.value + '\\n\\n' : '') + body;
+                ta.focus();
+              }
+              sel.selectedIndex = 0;
+            });
+          }
+        })();
+      </script>
     `;
 
     res.send(renderAdminPage(`Ticket #${ticket.number}`, content, base, 'tickets'));
   } catch (e) {
     console.error('Error loading ticket:', e);
     res.send(renderAdminPage('Error', '<p class="error">Error loading ticket.</p>', base, 'tickets'));
+  }
+}));
+
+/**
+ * Staff reply (public response)
+ */
+router.post('/tickets/:id/reply', asyncHandler(async (req, res) => {
+  const id = req.params.id;
+  const message = (req.body.message || '').trim();
+  const user = req.session.user;
+  if (!message) return res.redirect(`/admin/tickets/${id}?error=${encodeURIComponent('Reply message is required')}`);
+
+  try {
+    const { getSdk } = require('../lib/sdk');
+    const poster = user.name || user.username || 'Staff';
+    await getSdk().tickets.reply(id, {
+      staffId: user.id,
+      body: message,
+      poster,
+      source: 'Web',
+      format: 'text',
+    });
+    // best-effort notify
+    try {
+      const conn = getSdk().connection;
+      const owner = await conn.queryOne(
+        `SELECT u.name, ue.address as email, t.number, tc.subject
+         FROM ${conn.table('ticket')} t
+         JOIN ${conn.table('user')} u ON u.id = t.user_id
+         LEFT JOIN ${conn.table('user_email')} ue ON u.default_email_id = ue.id
+         LEFT JOIN ${conn.table('ticket__cdata')} tc ON tc.ticket_id = t.ticket_id
+         WHERE t.ticket_id = ?`,
+        [id]
+      );
+      if (owner?.email) {
+        const { notifyTicketReply } = require('../lib/ticketNotifications');
+        await notifyTicketReply(conn, {
+          ticket: { ticket_id: id, number: owner.number, subject: owner.subject },
+          userEmail: owner.email,
+          userName: owner.name,
+          isStaffReply: true,
+        });
+      }
+    } catch { /* ignore notify errors */ }
+    res.redirect(`/admin/tickets/${id}?msg=${encodeURIComponent('Reply sent')}`);
+  } catch (e) {
+    console.error('Staff reply failed:', e);
+    res.redirect(`/admin/tickets/${id}?error=${encodeURIComponent(e.message || 'Reply failed')}`);
+  }
+}));
+
+/**
+ * Internal note
+ */
+router.post('/tickets/:id/note', asyncHandler(async (req, res) => {
+  const id = req.params.id;
+  const note = (req.body.note || '').trim();
+  const title = (req.body.title || '').trim();
+  const user = req.session.user;
+  if (!note) return res.redirect(`/admin/tickets/${id}?error=${encodeURIComponent('Note is required')}`);
+
+  try {
+    const { getSdk } = require('../lib/sdk');
+    await getSdk().tickets.addNote(id, {
+      staffId: user.id,
+      title: title || null,
+      body: note,
+      poster: user.name || user.username || 'Staff',
+    });
+    res.redirect(`/admin/tickets/${id}?msg=${encodeURIComponent('Note added')}`);
+  } catch (e) {
+    console.error('Staff note failed:', e);
+    res.redirect(`/admin/tickets/${id}?error=${encodeURIComponent(e.message || 'Note failed')}`);
+  }
+}));
+
+/**
+ * Assign / transfer fields
+ */
+router.post('/tickets/:id/update', asyncHandler(async (req, res) => {
+  const id = req.params.id;
+  const user = req.session.user;
+  const staff_id = req.body.staff_id !== undefined ? parseInt(req.body.staff_id, 10) : undefined;
+  const team_id = req.body.team_id !== undefined ? parseInt(req.body.team_id, 10) : undefined;
+  const dept_id = req.body.dept_id !== undefined ? parseInt(req.body.dept_id, 10) : undefined;
+
+  try {
+    const { getSdk } = require('../lib/sdk');
+    const changes = {};
+    if (staff_id !== undefined) changes.staff_id = staff_id || 0;
+    if (team_id !== undefined) changes.team_id = team_id || 0;
+    if (dept_id !== undefined) changes.dept_id = dept_id;
+    await getSdk().tickets.update(id, changes, {
+      staffId: user.id,
+      username: user.name || user.username || '',
+    });
+    res.redirect(`/admin/tickets/${id}?msg=${encodeURIComponent('Ticket updated')}`);
+  } catch (e) {
+    console.error('Ticket update failed:', e);
+    res.redirect(`/admin/tickets/${id}?error=${encodeURIComponent(e.message || 'Update failed')}`);
+  }
+}));
+
+router.post('/tickets/:id/close', asyncHandler(async (req, res) => {
+  const id = req.params.id;
+  const user = req.session.user;
+  try {
+    const { getSdk } = require('../lib/sdk');
+    await getSdk().tickets.close(id, {
+      staffId: user.id,
+      username: user.name || user.username || '',
+    });
+    res.redirect(`/admin/tickets/${id}?msg=${encodeURIComponent('Ticket closed')}`);
+  } catch (e) {
+    res.redirect(`/admin/tickets/${id}?error=${encodeURIComponent(e.message || 'Close failed')}`);
+  }
+}));
+
+router.post('/tickets/:id/reopen', asyncHandler(async (req, res) => {
+  const id = req.params.id;
+  const user = req.session.user;
+  try {
+    const { getSdk } = require('../lib/sdk');
+    await getSdk().tickets.reopen(id, {
+      staffId: user.id,
+      username: user.name || user.username || '',
+    });
+    res.redirect(`/admin/tickets/${id}?msg=${encodeURIComponent('Ticket reopened')}`);
+  } catch (e) {
+    res.redirect(`/admin/tickets/${id}?error=${encodeURIComponent(e.message || 'Reopen failed')}`);
   }
 }));
 

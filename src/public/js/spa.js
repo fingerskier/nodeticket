@@ -266,26 +266,50 @@ const views = {
     content.classList.add('fade-out');
     await delay(150);
 
+    const query = app.getQuery ? app.getQuery() : {};
+    const page = Math.max(1, parseInt(query.page, 10) || 1);
+    const status = query.status || '';
+
     content.innerHTML = `
       <div class="page-header">
         <h2>My Tickets</h2>
         <button class="btn btn-success" data-state="create">+ New Ticket</button>
       </div>
-      <div id="ticketsList" class="loading">
+      <div class="filters" style="margin-bottom:1rem">
+        <label for="ticketStatusFilter" class="sr-only">Status</label>
+        <select id="ticketStatusFilter" aria-label="Filter by status">
+          <option value="" ${!status ? 'selected' : ''}>All</option>
+          <option value="open" ${status === 'open' ? 'selected' : ''}>Open</option>
+          <option value="closed" ${status === 'closed' ? 'selected' : ''}>Closed</option>
+        </select>
+      </div>
+      <div id="ticketsList" class="loading" aria-live="polite">
         <div class="spinner"></div>
         <p>Loading tickets...</p>
       </div>
+      <div id="ticketsPagination" class="pagination"></div>
     `;
 
     bindStateButtons();
+    const statusSel = document.getElementById('ticketStatusFilter');
+    if (statusSel) {
+      statusSel.addEventListener('change', () => {
+        const q = { page: 1 };
+        if (statusSel.value) q.status = statusSel.value;
+        app.gotoState('tickets', q);
+      });
+    }
     content.classList.remove('fade-out');
     content.classList.add('fade-in');
     await delay(150);
     content.classList.remove('fade-in');
 
     try {
-      const res = await api.get('/tickets');
+      const qs = new URLSearchParams({ page: String(page), limit: '25' });
+      if (status) qs.set('status', status);
+      const res = await api.get(`/tickets?${qs.toString()}`);
       const ticketsList = document.getElementById('ticketsList');
+      const pagEl = document.getElementById('ticketsPagination');
 
       if (!res.success || !res.data?.length) {
         ticketsList.innerHTML = `
@@ -294,6 +318,7 @@ const views = {
             <button class="btn btn-primary" data-state="create">Create Your First Ticket</button>
           </div>
         `;
+        if (pagEl) pagEl.innerHTML = '';
         bindStateButtons();
         return;
       }
@@ -311,7 +336,7 @@ const views = {
           </thead>
           <tbody>
             ${res.data.map(t => `
-              <tr class="clickable-row" data-state="ticket" data-id="${t.ticket_id}">
+              <tr class="clickable-row" data-state="ticket" data-id="${t.ticket_id}" tabindex="0" role="link">
                 <td><span class="ticket-number">${escapeHtml(t.number)}</span></td>
                 <td>${escapeHtml(t.subject || 'No Subject')}</td>
                 <td><span class="status status-${t.status?.state || 'open'}">${escapeHtml(t.status?.name || 'Open')}</span></td>
@@ -322,6 +347,27 @@ const views = {
           </tbody>
         </table>
       `;
+
+      const totalPages = res.pagination?.totalPages || 1;
+      const total = res.pagination?.total || res.data.length;
+      if (pagEl && totalPages > 1) {
+        const prev = page > 1
+          ? `<button type="button" class="btn" data-page="${page - 1}">&laquo; Previous</button>`
+          : '';
+        const next = page < totalPages
+          ? `<button type="button" class="btn" data-page="${page + 1}">Next &raquo;</button>`
+          : '';
+        pagEl.innerHTML = `${prev} <span>Page ${page} of ${totalPages} (${total})</span> ${next}`;
+        pagEl.querySelectorAll('[data-page]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const q = { page: btn.getAttribute('data-page') };
+            if (status) q.status = status;
+            app.gotoState('tickets', q);
+          });
+        });
+      } else if (pagEl) {
+        pagEl.innerHTML = total ? `<span>${total} ticket${total === 1 ? '' : 's'}</span>` : '';
+      }
 
       ticketsList.classList.remove('loading');
       bindTicketRows();
@@ -796,9 +842,16 @@ function bindStateButtons() {
 
 function bindTicketRows() {
   document.querySelectorAll('.clickable-row[data-state="ticket"]').forEach(row => {
-    row.addEventListener('click', () => {
+    const open = () => {
       const id = row.dataset.id;
       app.gotoState('ticket', { id });
+    };
+    row.addEventListener('click', open);
+    row.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        open();
+      }
     });
   });
 }
