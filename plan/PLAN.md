@@ -153,6 +153,7 @@ Effort estimates are order-of-magnitude for one focused engineer.
 | P2.5 | **Update/bulk integrity:** lifecycle state + full event context in one transaction; stock sentinel values instead of NULL into NOT NULL columns | `src/sdk/services/tickets.js:923-1053`, `src/controllers/ticketController.js:853-873` |
 | P2.6 | **Merge off:** `MERGE_ENABLED=false` default; docs mark experimental; stock `ticket_pid` representation deferred past v1.0 | `src/config/index.js`, `src/routes/tickets.js:128-135` |
 | P2.7 | **Adopt-existing acceptance suite:** boot against the stock dump; read seeded history/forms/config; run full lifecycle; assert written rows are stock-shape (columns, events, form entries, sequences) | `test/integration/` |
+| P2.8 | **Schema-signature boot check:** read osTicket's own version marker (`ost_config` core `schema_signature`) at startup; compare to allowlist of known v1.18.4 signatures; refuse boot on mismatch with a clear message; `SCHEMA_CHECK=enforce\|warn\|off` (default `enforce`). Signature is necessary-not-sufficient — strict mode + row-shape tests remain the backstop | new `src/lib/schemaCheck.js`, `src/config/index.js`, `src/app.js` |
 
 **Acceptance (red → green):**
 - [ ] Full lifecycle (create/reply/note/update/bulk/close/reopen) green on stock dump under strict mode
@@ -160,6 +161,7 @@ Effort estimates are order-of-magnitude for one focused engineer.
 - [ ] Stock-authored filter with supported actions applies; filter with unsupported action skips with log, create succeeds
 - [ ] Failure injection mid-create/mid-update → no orphan/partial rows
 - [ ] Row-shape assertions: everything we write matches stock column expectations (the "PHP could still read this" proof, without running PHP)
+- [ ] Boot against stock dump passes the signature check; doctored `schema_signature` → startup refusal under `enforce`, logged warning under `warn`
 
 **Exit:** compatibility contract T1/T2 demonstrated by CI-runnable suite.
 
