@@ -1,442 +1,400 @@
-# Nodeticket review: osTicket API parity and MVP UI readiness
+# Nodeticket current review: parity, security, and release readiness
 
-- **Review date:** 2026-07-16
-- **Nodeticket revision:** `e7fa1f99e7b301c629af69136580a0d09a2964df`
-- **Comparison baseline:** osTicket FOSS v1.18.4, commit `8d38b06`
-**Verdict:** stop before adding MVP UI features. Repair the authentication boundary, customer/staff data isolation, and current-schema ticket writes; then implement and prove the official API contract.
+- **Review date:** 2026-07-17
+- **Nodeticket revision:** 71cd6f7749ef3d457bf7379b232fb916cf4c676b
+- **Comparison target:** osTicket FOSS v1.18.4
+- **Test result:** 114 passed, 0 failed, 14 fixture tests skipped
+
+**Verdict:** the project has advanced substantially since the 2026-07-16 review, but it is not release-ready and exact osTicket parity is not proven. The customer and staff interfaces now contain useful end-to-end workflows. The remaining blockers are server-side authorization, attachment privacy and integrity, inbound-email trust, stock dynamic-form/filter/merge semantics, and the absence of a stock PHP/osTicket compatibility oracle.
+
+MCP must remain disabled. When enabled, its OAuth flow permits authorization-code theft, API keys become privileged MCP principals, and MCP ticket tools bypass the visibility and private-note rules used by the REST API.
 
 ## Executive summary
 
-Nodeticket is not currently compatible with osTicket's official HTTP API, and its native REST API is not a safe foundation for an MVP UI.
+The previous report is materially stale in a positive direction:
 
-The official osTicket API is intentionally small. Current v1.18.4 exposes ticket creation through JSON, XML, and MIME email plus a cron task endpoint. This review therefore separates two targets that should not be conflated:
+- Purpose JWTs are rejected by normal REST access-token validation.
+- Official JSON, XML, email, and cron paths now exist with API-key capability checks and stock-shaped top-level responses.
+- Core ticket creation, reply, and note writes use transactions and current required thread/event columns.
+- REST customer thread retrieval filters internal notes, and staff list/detail reads have department and assignment scoping helpers.
+- Native attachments, outbound notification hooks, task writes, FAQ administration, locks, optional Redis sessions, a MySQL HTTP fixture, and a much broader customer/staff UI have landed.
+- The unit suite grew from 45 to 114 passing tests.
 
-1. **Exact external API parity:** the paths, authentication, payloads, behavior, and responses provided by stock osTicket.
-2. **Product API readiness:** the broader ticket, account, staff, and administration behavior needed by Nodeticket's customer and staff interfaces.
+Those gains do not close the release gates:
 
-The immediate blockers are functional and security defects, not missing polish:
+1. **MCP is unsafe to enable.** OAuth auto-approval plus arbitrary registered redirects enables login CSRF/code theft. MCP also treats API keys as staff/admin and omits core ticket scope and private-note checks.
+2. **Authorization is inconsistent across interfaces.** REST checks only a subset of ticket permissions; direct admin POST handlers do not repeat ticket visibility/permission checks; merge authorizes only the source ticket; tasks and MCP remain globally scoped.
+3. **Attachments cross trust boundaries.** Customer list/download includes attachments on internal notes, caller-supplied entry IDs are not bound to the authorized ticket, and reply/file writes are not atomic.
+4. **Official email reply handling is spoofable.** A subject ticket number can select a ticket, and an unknown sender is attributed to the ticket owner. Nested MIME, reply attachments, and durable deduplication are incomplete.
+5. **Shared-database parity remains incomplete.** Dynamic form entries are not written, filter vocabulary differs from stock, merge rewrites the graph using non-stock semantics, and update/bulk events still violate transaction or strict-schema invariants.
+6. **The compatibility proof is too weak.** The fixture applies a local osTicket-shaped schema and hand-written seed, not a fully bootstrapped stock v1.18.4 application. CI runs only unit tests, and no PHP differential, generated-client, MCP, browser, or accessibility gate exists.
 
-- Password-reset and email-verification JWTs are accepted as ordinary bearer credentials. A verification token has no principal type, and unknown types fail open through ticket access checks.
-- Every active osTicket API key bypasses staff, administrator, and role-permission checks, regardless of its `can_create_tickets` or `can_exec_cron` flags.
-- Customer thread retrieval includes internal notes and internal identity metadata.
-- Native ticket creation queries a nonexistent `help_topic.isactive` column on the current osTicket schema.
-- Ticket creation, reply, note, and event writes omit required current-schema columns. Ticket creation is not transactional, so a late failure can leave partial records.
-- The only official-format JSON route is a deliberate 400 stub. XML and email routes do not exist. Cron is exposed at the wrong path and skips all work.
-- Staff ticket visibility is global in both REST and the server-rendered admin interface; `requirePermission` has no route call sites.
+## Scope and verification limits
 
-The existing test suite passes **45/45**, but it covers CLI behavior, password handling, and user form fields only. It does not exercise HTTP routes, authentication middleware, tickets, a real osTicket database, cron, RBAC, or browser workflows. The green suite does not reduce the risk of the findings below.
+This review used:
 
-## Scope and evidence
+- Static inspection of runtime routes, middleware, SDK services, MCP, UI, schema, fixture, OpenAPI, production documentation, tests, and planning files.
+- Comparison with the stock v1.18.4 [HTTP route table](https://github.com/osTicket/osTicket/blob/v1.18.4/api/http.php), [ticket API](https://github.com/osTicket/osTicket/blob/v1.18.4/include/api.tickets.php), [ticket model and permissions](https://github.com/osTicket/osTicket/blob/v1.18.4/include/class.ticket.php), and [cron implementation](https://github.com/osTicket/osTicket/blob/v1.18.4/include/class.cron.php).
+- npm run test:all at the reviewed revision.
 
-The review used:
-
-- Static inspection of application, SDK, route, middleware, UI, schema, OpenAPI, and planning files.
-- Behavioral probes of JWT purpose-token handling, API-key authorization, and the CSRF middleware in isolation.
-- Comparison with the current official [osTicket v1.18.4 release](https://github.com/osTicket/osTicket/releases/tag/v1.18.4), [HTTP route table](https://github.com/osTicket/osTicket/blob/v1.18.4/api/http.php), [ticket API implementation](https://github.com/osTicket/osTicket/blob/v1.18.4/include/api.tickets.php), [cron implementation](https://github.com/osTicket/osTicket/blob/v1.18.4/include/api.cron.php), [ticket creation path](https://github.com/osTicket/osTicket/blob/v1.18.4/include/class.ticket.php), and [install schema](https://github.com/osTicket/osTicket/blob/v1.18.4/setup/inc/streams/core/install-mysql.sql).
-- `npm test` on the reviewed branch.
-
-No live stock-PHP/osTicket instance or fully bootstrapped MySQL fixture was available. Schema incompatibilities are direct comparisons against required columns and should be converted into real-database red tests before implementation. UI findings are source-level; browser and accessibility acceptance tests remain to be added.
+The test command discovered 128 tests: 114 passed and 14 HTTP fixture tests skipped because MySQL was unavailable. The skipped state is intentional in test/integration/helpers.js:25-42 and test/integration/http.fixture.test.js:41-47. No stock PHP instance, fully installed osTicket database, generated OpenAPI client, MCP integration harness, or browser runner was available. Claims of exact interoperability therefore remain unverified even where local unit or synthetic-fixture tests are green.
 
 ## Readiness scorecard
 
-| Area | Status | Reason |
+| Area | Current state | Release assessment |
 |---|---|---|
-| Official JSON ticket API | **Fail** | `/api/tickets.json` always returns 400; auth and response contracts are absent. |
-| Official XML ticket API | **Missing** | No route or raw XML parser. |
-| Official email ticket API | **Missing** | No MIME parser, reply threading, deduplication, or attachment path. |
-| Official cron API | **Fail** | Wrong path and all jobs are reported as skipped. |
-| API-key trust boundary | **Critical fail** | Any active key becomes a native administrator. |
-| Native ticket writes | **Blocker** | Invalid topic query plus current-schema and transaction defects. |
-| Customer data isolation | **High / blocker** | Internal notes, private fields, and events are returned to ticket owners. |
-| Staff RBAC/visibility | **High / blocker** | All staff can reach global ticket/task data; permissions are not routed. |
-| OpenAPI | **Fail** | Paths, payloads, fields, and response envelopes differ from runtime behavior. |
-| Customer UI | **Not MVP-safe** | Privacy, login, reopen, pagination, attachment, and accessibility gaps. |
-| Staff UI | **Not operational** | Read-only detail and inadequate/global queues. |
-| Admin UI | **Partial** | Broad configuration exists, but authorization and several workflows are incomplete. |
+| Native REST API | Broad and functional on happy paths | **Blocked:** mutation RBAC, privacy, identity, and atomicity gaps |
+| Official JSON API | Route, key gate, create kernel, bare number response | **Partial:** dynamic fields, priority, flags, message and attachment contract differ |
+| Official XML API | Route and custom parser exist | **Partial:** attributes, CDATA, files, and differential behavior unproven |
+| Official email API | Route, minimal MIME parser, threading and dedup attempt | **Blocked:** sender authorization, nested MIME, reply files, idempotency |
+| Official cron API | Correct path/body; overdue and lock cleanup | **Partial:** most stock work omitted; job failures still return success |
+| MySQL/osTicket schema | Core create/reply/note improved | **Blocked:** forms, filters, merge, update/bulk invariants, no PHP round trip |
+| Staff RBAC | Read helpers and two permission checks exist | **Blocked:** incomplete across REST, SSR admin, tasks, and MCP |
+| Customer privacy | REST thread/event DTO improved | **Blocked:** attachments, MCP, organization/department/profile boundaries |
+| MCP | Feature-gated and disabled by default | **Critical fail if enabled** |
+| Customer/staff UI | Meaningful operational workflows now exist | **Backend-blocked; browser/a11y unverified** |
+| OpenAPI | Broad hand-maintained route catalog | **Not generated-client safe or contract-tested** |
+| CI/test oracle | 114 unit tests; optional 14-test fixture | **Insufficient:** fixture job disabled and skips are green |
+| Documentation | Production and fixture docs improved | **Drift:** support, dialect, TODO, and completion claims conflict |
 
-## Stop-ship findings
+## Release-blocking findings
 
-The `C` prefix below means **completion/release blocker**, not a CVSS severity. C-01 and C-02 are critical security issues; the remaining entries combine high-severity privacy/authorization defects with functional or data-integrity blockers.
+The C prefix means completion/release blocker, not a CVSS score. C-01 is conditional on enabling MCP; the project is safe from that route only while MCP remains disabled.
 
-### C-01 — Purpose JWTs authenticate as access tokens and unknown principals fail open
-
-**Evidence**
-
-- `src/middleware/auth.js:14-26` verifies any JWT signed with the shared secret and returns its payload without checking issuer, audience, token use, or allowed principal type.
-- Password-reset tokens use that same secret and contain a normal `staff` or `user` type: `src/controllers/authController.js:152-156` and `src/routes/html.js:322-326`.
-- Email-verification tokens contain an ID and purpose but no principal type: `src/controllers/authController.js:258-262`.
-- `authenticate` accepts any truthy decoded object: `src/middleware/auth.js:73-103`.
-- Ticket listing restricts only principals whose type is exactly `user`: `src/controllers/ticketController.js:13-23`.
-- `canAccessTicket` handles staff/API keys and users, then falls through for any unknown type: `src/middleware/auth.js:199-240`.
-- Refresh accepts expired access or purpose tokens for seven days and re-signs their payload without checking account state or token use: `src/controllers/authController.js:89-104`.
-
-**Impact**
-
-A user's verification link can be used as bearer authentication to list and read global tickets, close arbitrary tickets, and attempt arbitrary replies. A staff password-reset link is immediately a staff API credential. Purpose tokens can also be refreshed into new bearer tokens. This trust-boundary defect applies to every protected surface that delegates to the same middleware.
-
-**Required acceptance tests**
-
-- Reset and verification tokens receive 401 from ordinary authenticated endpoints.
-- Missing, unknown, or malformed principal types fail closed on every protected endpoint. Optional/public endpoints define whether an invalid bearer is rejected or ignored, but never elevate it to a principal.
-- Access, refresh, reset, verification, and MCP tokens have explicit and distinct `token_use`, issuer, audience, and key/secret validation.
-- Refresh revalidates principal status and accepts only a refresh credential; logout/revocation behavior is explicit.
-
-### C-02 — Any active osTicket API key becomes a global native administrator
+### C-01 - MCP has an unsafe OAuth and principal boundary
 
 **Evidence**
 
-- Key lookup loads the two osTicket capability flags: `src/middleware/auth.js:32-63`.
-- `requireStaff` accepts every API key as staff: `src/middleware/auth.js:134-149`.
-- `requireAdmin` accepts every API key as an administrator: `src/middleware/auth.js:154-169`.
-- `requirePermission` explicitly bypasses permissions for API keys: `src/middleware/auth.js:174-194`.
-- `canAccessTicket` grants every API key global ticket access: `src/middleware/auth.js:199-209`.
-- `can_create_tickets` is not enforced by a route. Native create rejects keys because it accepts only users: `src/controllers/ticketController.js:53-59`.
-- API-key record IDs can be passed into reply/note code as though they were `staff_id` values: `src/controllers/ticketController.js:165-196`.
+- Unauthenticated dynamic client registration accepts arbitrary nonempty redirect URIs without scheme, loopback, or trusted-domain restrictions: src/mcp/oauth/register.js:11-27.
+- GET /oauth/authorize uses the caller's existing generic authentication, silently approves, makes state optional, and redirects a code without a consent or CSRF confirmation step: src/mcp/oauth/authorize.js:19-50. POST has the same approval model at src/mcp/oauth/authorize.js:57-87.
+- The attacker can exchange the victim-bound code with the attacker's PKCE verifier: src/mcp/oauth/token.js:26-51.
+- Generic authentication accepts API keys: src/middleware/auth.js:109-145. MCP then explicitly accepts them as administrators/staff/users: src/mcp/tools/admin.js:12-20, src/mcp/tools/staff.js:10-20, and src/mcp/tools/users.js:10-22.
+- MCP ticket list/search/detail omit staff_scope; customer include_thread omits publicOnly; update, note, and merge omit the REST authorization helpers: src/mcp/tools/tickets.js:16-45, 62-110, 134-179, 229-400.
+- MCP bearer validation checks signature/expiry but not token purpose or principal state, and transport session IDs are not rebound to the current JWT principal: src/mcp/transport.js:35-60, 83-87, 99-121.
+- MCP is disabled by default at src/config/index.js:65-70 and mounted only when enabled at src/app.js:206-210. Integration tests explicitly disable it at test/integration/helpers.js:8-20.
 
 **Impact**
 
-A disabled-capability, create-only, or cron-only key can reach native administrator mutations and global data. The numeric API-key ID can also corrupt staff attribution. This is substantially broader than stock osTicket's API-key contract.
+A logged-in victim can be induced to authorize an attacker-controlled callback, allowing the attacker to exchange a code for the victim's MCP bearer. Any active osTicket API key can also become an unrestricted MCP administrator. Customer MCP clients can read private notes, while staff MCP clients bypass department, assignment, team/referral, and role scope.
 
-**Required acceptance tests**
+**Required red/green gate**
 
-- A key without the required compatibility capability receives stock-compatible HTTP 401 from create/cron. It cannot authenticate to any protected native route; native staff/admin routes reject API keys without constructing a staff principal.
-- A create-only key can call only the official create endpoints.
-- A cron-only key can call only official cron.
-- Neither key can call native staff/admin endpoints or be persisted as a staff identity.
-- Active state and exact source-IP restrictions are enforced independently for each capability.
+- Keep MCP disabled in production until this gate is green.
+- Restrict or pre-register redirect URIs, require state and user-confirmed authorization, bind code/client/redirect/PKCE/principal, and make codes single-use.
+- Reject API-key principals from MCP OAuth and all native MCP tools.
+- Validate token_use, allowed principal types, live account state, and session-to-principal binding on every MCP request.
+- Apply one ticket visibility/permission service to REST, SSR, and MCP.
+- Add behavioral tests for login CSRF, redirect validation, code replay, cross-principal session reuse, API-key escalation, staff scope, and customer-note disclosure.
 
-### C-03 — Customer APIs disclose internal notes, events, and identity data
+### C-02 - Ticket visibility and mutation permissions are not consistently enforced
 
 **Evidence**
 
-- Internal notes are stored as thread-entry type `N`: `src/controllers/ticketController.js:186-198` and `src/sdk/services/tickets.js:739-758`.
-- Customer thread retrieval supplies no visibility context to the SDK: `src/controllers/ticketController.js:37-39`.
-- The thread query selects every entry type and joins staff and customer email fields: `src/sdk/services/tickets.js:351-385`.
-- Pagination totals also count every entry type: `src/sdk/services/tickets.js:377-384`.
-- Ticket owners may call the event-history endpoint, which returns the internal audit stream: `src/routes/tickets.js:24-25` and `src/controllers/ticketController.js:43-48`.
-- Ticket detail returns assigned-staff email and raw collaborator identities to the customer: `src/sdk/services/tickets.js:126-164` and `326-335`.
-- The SPA renders every non-message entry as a support response rather than treating notes as private: `src/public/js/spa.js:425-435`.
+- REST mounts explicit permissions for internal notes and merge, but not staff create-on-behalf, reply, update, assign, transfer, close/reopen, attachments, or locks: src/routes/tickets.js:40-135.
+- Stock osTicket defines distinct create, edit, assign, transfer, merge, reply, close, and delete permissions in its ticket model; the local route layer does not yet enforce the equivalent matrix.
+- Admin list/detail GETs apply staff visibility, but the top-level guard only checks session shape and direct reply, attachment, note, update, close, and reopen POST handlers do not repeat visibility or permission checks: src/routes/admin.js:14-28, 607-649, 973-1047, 1053-1071, 1090-1114, 1119-1176.
+- Merge authorizes only /tickets/:id. The target ID is accepted later and mutated without target-ticket authorization: src/routes/tickets.js:128-135, src/controllers/ticketController.js:442-459, src/sdk/services/tickets.js:1307-1368.
+- Task routes require staff but have no department/assignment/permission scope, and listing begins with a global query: src/routes/tasks.js:12-27 and src/controllers/taskController.js:24-55.
+- MCP omits the same visibility and permission checks; see C-01.
 
 **Impact**
 
-Any internal note already present in the shared osTicket database can be read by the customer who owns the ticket. Internal staff/customer email fields and operational event details also cross the public boundary. Local note creation currently has separate schema defects, but that does not mitigate disclosure of records created by stock osTicket or other writers.
+A scoped agent can mutate a foreign ticket by posting its ID directly, including merging an authorized source into an unauthorized target. UI hiding does not mitigate the server-side gap. Task and MCP access remain broader than the staff member's osTicket role.
 
-**Required acceptance tests**
+**Required red/green gate**
 
-- A customer receives only explicit public-field allowlists for ticket detail, collaborators, thread entries, and timelines.
-- Customer pagination counts and page boundaries apply after the same visibility filter.
-- Customer event access is removed or mapped to a safe public timeline.
-- Staff notes remain visible to authorized staff and are visually distinct in the staff UI.
+- Define one operation matrix for view, create, reply, note, edit, assign, transfer, merge, close/reopen, attach, lock, bulk, and task operations.
+- Authorize both source and target resources and re-check within the write transaction where practical.
+- Cover primary and extended departments, assigned_only, direct assignee, team membership, referral, administrator override, and every role permission.
+- Invoke the same service from REST, admin SSR POST handlers, tasks, and MCP.
 
-### C-04 — Native ticket creation cannot run against the current standard schema
+### C-03 - Attachment authorization, validation, and atomicity are unsafe
 
 **Evidence**
 
-- `src/sdk/services/tickets.js:452-458` filters `help_topic` on `ht.isactive = 1`.
-- Neither `docs/mysql.sql:584-612` nor the official v1.18.4 `help_topic` table has that column; current osTicket represents relevant state through `flags` and `ispublic`.
+- Ticket owners can list, download, and upload attachments: src/routes/tickets.js:68-90.
+- Attachment queries include all thread entry types, including internal N notes: src/sdk/services/tickets.js:1375-1428. The controller's assertion that thread attachments are customer-safe is false: src/controllers/ticketController.js:336-341.
+- Upload accepts entry_id, but addAttachments does not verify that the entry belongs to the authorized ticket/thread: src/controllers/ticketController.js:359-366 and src/sdk/services/tickets.js:1450-1476.
+- Reply commits before attachments are added in a separate transaction: src/controllers/ticketController.js:276-294. A file failure can return an error after the reply exists, making retries duplicate the message.
+- File size/type checks are UI-only at src/public/js/spa.js:78-104 and src/routes/admin.js:860-867. Server storage does not enforce the configured attachment policy and silently skips malformed inputs: src/sdk/services/tickets.js:840-897.
 
 **Impact**
 
-`POST /api/v1/tickets` should fail with an unknown-column error before any insert on a standard v1.18.x database. Customer ticket creation is therefore not a usable MVP workflow.
+A customer can retrieve files attached to private notes and can link a new file to a guessed entry on another ticket. Failed reply uploads can create partial writes and duplicate retries. Direct API callers bypass UI file limits.
 
-**Required acceptance tests**
+**Required red/green gate**
 
-- Native and compatibility ticket creation run against a fully bootstrapped v1.18.4 MySQL database in strict mode.
-- Active/public topic selection follows the official flag semantics, including inactive and private topics.
-- The selected topic's department, status, priority, SLA, assignment, numbering, and autoresponse defaults are verified behaviorally.
+- Filter attachment list/download through the same publicOnly entry policy as threads.
+- Require and verify ticket -> thread -> entry ownership before every file association.
+- Make reply plus attachments one transaction or define an idempotent two-phase contract.
+- Enforce configured enablement, size, count, content/type, and safe filename rules server-side.
+- Test private-note files, foreign entry IDs, deleted/missing blobs, malformed data URLs, oversized files, rollback, and retry idempotency.
 
-### C-05 — Core writes violate osTicket schema and transaction invariants
+### C-04 - Inbound email can inject replies into an existing ticket
 
 **Evidence**
 
-- Current osTicket requires `thread_entry.updated`; create, reply, and note inserts omit it: `src/sdk/services/tickets.js:503-507`, `688-692`, and `748-752`.
-- Current osTicket requires event context including department, topic, and team IDs. Normal and bulk event inserts omit it: `src/sdk/services/tickets.js:62-75` and `src/controllers/ticketController.js:291-310`.
-- Ticket creation writes ticket, dynamic cdata, thread, and first entry sequentially without a transaction: `src/sdk/services/tickets.js:479-507`.
-- The generated ticket number is timestamp/random data rather than the configured osTicket sequence and number format: `src/sdk/services/tickets.js:28-36` and `464`.
-- Topic SLA/priority values are read by the controller but discarded by the SDK insert: `src/controllers/ticketController.js:64-104` and `src/sdk/services/tickets.js:479-485`.
-- Filter action results are interpolated as ticket-table columns after creation. `set_priority` emits `priority_id`, which is not a current `ticket` column: `src/controllers/filterController.js:276-283` and `src/controllers/ticketController.js:106-119`.
-- Additional create helpers pass explicit `NULL` into required organization, staff, and department columns: `src/sdk/services/organizations.js:251-268`, `src/sdk/services/staff.js:328-338`, and `src/sdk/services/departments.js:283-291`.
+- The email parser derives a ticket number from the subject: src/lib/legacyTicketEmail.js:72-87.
+- The controller selects an existing ticket from In-Reply-To/References or the subject number: src/controllers/ticketController.js:691-718.
+- If the sender email is unknown, the reply is attributed to replyTicket.user_id and posted as a public response: src/controllers/ticketController.js:720-736.
+- Reply attachments are parsed but never passed to the reply/file write: src/controllers/ticketController.js:720-736. New-ticket attachments take a separate path at src/controllers/ticketController.js:748-765.
+- Message-ID metadata is recorded after the entry and all insertion failures are swallowed: src/controllers/ticketController.js:637-651, 738-765. The local mid index is not unique: docs/mysql.sql:400-409.
+- The MIME parser handles only a shallow multipart shape: src/lib/legacyTicketEmail.js:19-60.
 
 **Impact**
 
-Strict MySQL writes fail. A failure after the first ticket insert can leave an orphaned or incomplete ticket because the operation is not atomic. Even where permissive schema customization lets a write complete, the resulting object graph does not preserve osTicket numbering, dynamic-form, topic, SLA, event, notification, or assignment semantics.
+Anyone who knows or guesses a ticket number or reply Message-ID can send mail that is attributed to the ticket owner. Nested MIME can lose the message body, reply files are dropped, and a metadata failure or race permits duplicate processing.
 
-**Required acceptance tests**
+**Required red/green gate**
 
-- Exercise create, reply, note, update, bulk, and merge against a clean, post-bootstrap v1.18.4 fixture in strict mode.
-- Inject a failure after every create step and assert complete rollback with no orphan records.
-- Assert required thread and event context fields and validate the written rows through stock osTicket.
-- Run bidirectional interoperability: Node create → PHP view/reply/close and PHP create → Node read/update.
-- Include customized dynamic forms and configured number sequences, not only the default install.
+- Match stock thread-header lookup and sender/collaborator authorization; never substitute the owner for an unknown sender.
+- Use a mature MIME parser with nested multipart/alternative and multipart/mixed coverage.
+- Persist Message-ID claim, entry, and files atomically with a uniqueness/idempotency constraint.
+- Add exact official nested-MIME examples plus spoofed sender, collaborator, duplicate, race, attachment, bounce, and malformed-mail tests.
 
-### C-06 — Staff RBAC and department visibility are not enforced
+### C-05 - Shared-database lifecycle semantics remain non-stock
+
+#### Dynamic forms
+
+Stock ticket creation validates and saves dynamic form answers. Nodeticket reduces official input to a fixed object at src/lib/legacyTicketApi.js:12-72 and writes only ticket__cdata(ticket_id, subject) at src/sdk/services/tickets.js:758-766. It never creates form_entry/form_entry_values for ticket answers. Topic detail returns only form headers, not field definitions or validation configuration: src/controllers/topicController.js:113-159; the topic router has no field-schema endpoint at src/routes/topics.js:11-15.
+
+Configured required/custom fields, phone, notes, priority, and topic-specific answers are therefore ignored or absent from stock's canonical data model.
+
+#### Filters
+
+Local filters store and interpret set_dept, set_priority, set_sla, set_status, assign_staff, assign_team, set_topic, and reject: src/controllers/filterController.js:8-10, 112-119, 223-286. Stock uses different action names/config keys and different case/regex matching semantics. Native create also applies filter results after the create transaction through an independent UPDATE, and its allowlist drops priority: src/controllers/ticketController.js:131-164.
+
+Filters authored by stock PHP and Nodeticket are not mutually reliable; a post-create filter failure can leave a ticket despite a failed HTTP request.
+
+#### Merge
+
+Local merge physically moves thread entries and collaborators, closes the source, and logs events: src/sdk/services/tickets.js:1307-1368. It does not model stock parent/child ticket_pid, merge flags, thread parent metadata, child-owner collaboration, referrals, task movement, or complete last-message/response state. Authorization also omits the target ticket as described in C-02.
+
+#### Update and bulk
+
+Update logs close/assign/transfer events before the final ticket UPDATE and outside one transaction: src/sdk/services/tickets.js:923-1053. Nullable staff/team/SLA values can write NULL to stock NOT NULL columns. Bulk audit insertion omits required event context columns: src/controllers/ticketController.js:853-873 versus docs/mysql.sql:420-434.
+
+**Required red/green gate**
+
+- Build a topic-aware public/staff form schema and validate answers against it.
+- Write form_entry, form_entry_values, and cdata projection inside the ticket transaction.
+- Adopt stock filter action vocabulary/configuration and matching behavior, with reject/routing inside the create transaction.
+- Disable or label merge experimental until its stock representation, target authorization, row locking, tasks, referrals, participants, and derived state are compatible.
+- Put update/bulk state and full event context in one lifecycle transaction, using stock sentinel values and event names.
+- Prove Node create -> PHP view/edit/reply and PHP create -> Node view/update with custom forms, filters, assignment, and merge cases.
+
+### C-06 - Identity, privacy, and account-state boundaries remain open
 
 **Evidence**
 
-- `requirePermission` has no call site outside its definition/export.
-- Staff/API keys bypass ticket access globally despite the comment claiming department scope: `src/middleware/auth.js:199-209`.
-- Ticket list adds no staff department, assignment, team, or referral filter: `src/controllers/ticketController.js:13-23`.
-- Staff login principals omit the full department-access and `assigned_only` context needed to evaluate osTicket visibility: `src/controllers/authController.js:34-44`.
-- The server-rendered `/admin` guard checks only for a staff session, and its dashboard/list/detail queries are global: `src/routes/admin.js:14-28`, `151-198`, `311-363`, and `497-523`.
-- Tasks expose a global queue to any staff/API key: `src/routes/tasks.js:11-18` and `src/controllers/taskController.js:24-55`.
+- Any authenticated principal can retrieve organization detail and member lists, including emails/internal metadata: src/routes/organizations.js:14-18 and src/sdk/services/organizations.js:89-138, 153-178.
+- /users/:id/organizations has no self check: src/routes/users.js:36-37 and src/controllers/userController.js:47-51.
+- Department detail has no public/staff visibility rule and returns private signature, manager email, SLA, and counts: src/routes/departments.js:11-15 and src/sdk/services/departments.js:99-153.
+- /users/me/profile accepts generic authentication and updates the user table with req.auth.id; an API-key or staff numeric ID can collide with a customer ID: src/routes/users.js:11-24 and src/controllers/userController.js:81-109. HTML /profile has the same principal confusion: src/routes/html.js:603-674.
+- Customer login and refresh do not consistently reject inactive account state: src/sdk/services/auth.js:83-90, src/routes/html.js:246-251, and src/controllers/authController.js:198-224.
+- Bearer/session validation trusts cached claims and does not revalidate account state, role, permissions, organization, or department scope: src/middleware/auth.js:22-34, 78-103. Admin SSR also trusts the cached session snapshot: src/routes/admin.js:14-28.
+- Default JWT/session lifetimes are up to 24 hours, and logout destroys only the browser session: src/config/index.js:30-41 and src/controllers/authController.js:126-158.
 
 **Impact**
 
-Ordinary agents can view and mutate tickets outside their allowed departments and assignments. Adding staff UI controls now would expose more unsafe mutations without fixing the server boundary.
+Authenticated users can cross organization/department privacy boundaries. Staff and API-key identities can edit a customer row through numeric-ID collision. Disabled accounts and removed privileges can remain usable until cached credentials expire.
 
-**Required acceptance tests**
+**Required red/green gate**
 
-- Cover primary department, extended-department role, `assigned_only`, direct assignment, team membership, and referral access.
-- Exercise every read and mutation with allowed and denied role permissions.
-- Apply one authorization service consistently to REST, server-rendered admin routes, and MCP tools.
+- Use explicit user-only, staff-only, admin-only, and official-key-only guards; never infer identity from a numeric ID alone.
+- Define self, organization-member/manager, public-department, and scoped-staff response allowlists.
+- Reject inactive accounts at login and refresh, and define bounded revalidation/revocation for sessions, access tokens, refresh credentials, role changes, and logout.
+- Test colliding IDs across every principal type and immediate disable/role/scope changes.
 
-### C-07 — Official osTicket HTTP API parity is effectively zero
+### C-07 - The test fixture is not a stock compatibility oracle
 
-Stock v1.18.4 exposes the following routes through its [official route table](https://github.com/osTicket/osTicket/blob/v1.18.4/api/http.php):
+**Evidence**
 
-| Official operation | Required contract | Nodeticket behavior | Status |
-|---|---|---|---|
-| `POST /api/tickets.json` | JSON create, API-key/IP/capability auth, HTTP 201 with bare external ticket number | Route reaches `createLegacy`, which always throws 400 | **Fail** |
-| `POST /api/tickets.xml` | XML create with equivalent semantics | No route and no raw XML parser | **Missing** |
-| `POST /api/tickets.email` | MIME new-ticket/reply threading, Message-ID deduplication, attachments | No route or MIME/inbound-mail implementation | **Missing** |
-| `POST /api/tasks/cron` | `can_exec_cron`, run actual cron work, HTTP 200 with literal body `Completed` | No official path; `/api/v1/cron` reports all tasks skipped | **Fail** |
+- The fixture describes itself as osTicket-shaped and applies docs/mysql.sql plus a project-specific extra schema: docs/FIXTURE.md:3-15.
+- Bootstrap reads those local files and hand-seeds a minimal set of statuses, one department/admin/user/topic/key, and ticket__cdata: scripts/fixture-bootstrap.js:29-31, 73-195, 219-237.
+- It does not run a pinned stock installer/post-bootstrap process or seed custom forms, extended departments, roles, teams/referrals, filters, mail configuration, or PHP behavior.
+- HTTP coverage exercises happy-path auth, native lifecycle, note privacy, JSON/XML/cron, and attachment round trips, but not email HTTP, forms, filters, update, bulk, merge, failure injection, or PHP interoperability: test/integration/http.fixture.test.js:49-385.
+- npm test excludes integration tests by script definition; npm run test:all treats fixture unavailability as 14 skips and exit 0: package.json:13-19.
+- CI runs npm test only. The MySQL fixture job is fully commented out: .github/workflows/ci.yml:1-16, 18-54.
 
-Additional evidence:
+**Impact**
 
-- The compatibility stub is `src/controllers/ticketController.js:219-224`; its route is `src/routes/tickets.js:42-43`.
-- The ticket router is mounted both at `/api/v1/tickets` and `/api`: `src/app.js:100-120`. This also exposes unintended native routes under `/api`, outside the `/api/v1` rate limiter.
-- JSON and URL-encoded middleware are installed, but no raw XML or MIME parser exists: `src/app.js:64-66`.
-- Local cron is `POST /api/v1/cron`: `src/routes/system.js:23-24`. `src/controllers/systemController.js:41-60` explicitly skips mail fetching and ticket monitoring.
-- The OpenAPI server `/api/v1` plus path `/tickets.json` advertises nonexistent `/api/v1/tickets.json`; the accidental mounted compatibility path is `/api/v1/tickets/tickets.json` and still reaches the stub: `docs/openapi.json:15-18` and `473-503`.
+Green tests prove that a tailored MySQL 8 subset accepts the local happy paths. They do not prove that stock v1.18.4 can read, edit, reply to, merge, or administer the written graph, nor that Nodeticket behaves like stock on the official API corpus.
 
-The official create contract includes the core `name`, `email`, `subject`, and `message` fields plus supported options such as source/topic, alert/autorespond, priority, IP, and dynamic fields. JSON represents attachments as RFC 2397 data URLs; XML uses structured/base64 file data; `.email` consumes MIME attachments. Current source also supports due date, SLA, and staff assignment for JSON/XML. Nodeticket's native create accepts an authenticated user, derives email, consumes `topic_id`, and returns a JSON envelope; it is not a substitute for the compatibility contract.
+**Required red/green gate**
+
+- Bootstrap a pinned stock v1.18.4 installation, including generated forms/cdata/configuration, and keep the local simulator only as a fast lower-level fixture if useful.
+- Add bidirectional Node/PHP tests, strict SQL mode, failure injection, RBAC matrices, MCP tests, and an official JSON/XML/email/cron differential corpus.
+- Make fixture unavailability a visible CI failure for required jobs; do not count skips as parity green.
 
 ## High-priority findings
 
-### H-01 — Organization, department, and profile routes cross identity/privacy boundaries
+### H-01 - Official JSON/XML behavior is only partially compatible
 
-- Organization detail and member listing require authentication but no organization membership or staff check: `src/routes/organizations.js:14-18` and `src/controllers/organizationController.js:18-28`.
-- Member results include names and email addresses: `src/sdk/services/organizations.js:153-176`.
-- `/users/:id/organizations` lacks the self check used by adjacent user operations: `src/routes/users.js:33-37` and `src/controllers/userController.js:34-51`.
-- Department detail requires authentication but not public-department or staff scope: `src/routes/departments.js:11-15`. It returns private signatures, manager email, SLA, and staff/open-ticket counts: `src/sdk/services/departments.js:99-153`.
-- `/profile` accepts staff sessions but reads and updates the customer `user` table with the staff ID: `src/routes/html.js:555-618`. Matching numeric IDs can cause a staff member to edit an unrelated customer.
+- alert and autorespond are parsed but not applied: src/lib/legacyTicketApi.js:69-70 and src/controllers/ticketController.js:480-496.
+- Fixed parsing drops dynamic fields; priority and several stock options are not persisted.
+- Stock JSON attachment objects use filename-to-data-URL mappings, while local tests/OpenAPI specify name/data objects: test/legacy.ticket-api.test.js:65-76, 188-203 and docs/openapi.json:6620-6643, 6783-6826.
+- Stock supports RFC2397 message bodies; local code treats the string as literal message content.
+- XML parsing discards root attributes, assumes base64 for plain file content, and does not correctly advance through CDATA: src/lib/legacyTicketXml.js:38-76, 117-169.
 
-Make organization visibility policy explicit and enforce self/staff scope server-side. Split customer and staff profile workflows.
+Build a differential corpus from stock setup/doc/api examples, including dynamic fields, unexpected fields, notification flags, data-URL bodies/files, root attributes, CDATA, validation errors, and exact status/body behavior.
 
-### H-02 — Session mutations lack a complete CSRF boundary, and duplicate routes bypass rate limiting
+### H-02 - Cron and SLA behavior are much narrower than stock
 
-- API routes are mounted before CSRF protection: `src/app.js:99-130`.
-- API authentication accepts browser sessions: `src/middleware/auth.js:82-92`.
-- SPA mutations send session cookies but no explicit CSRF header: `src/public/js/spa.js:15-41`.
-- Session cookies omit an explicit `SameSite` policy: `src/app.js:68-79`.
-- The entire ticket router is also mounted at `/api`, while rate limiting applies only under `/api/v1`: `src/app.js:100-120`.
-- API-key IP validation relies on `req.ip`, while `trust proxy` is unconditionally set to one hop: `src/app.js:47` and `src/middleware/auth.js:48-53`. Safety depends on the actual proxy topology.
+The official endpoint and literal Completed response exist, but the runner only marks past explicit duedate values overdue and cleans locks: src/lib/cron.js:11-86. Mail fetching and session cleanup are explicit skips at src/lib/cron.js:88-98, and stock draft/log/reset/orphan/plugin work is absent. The overdue query ignores stock est_duedate/SLA scheduling. Per-job errors become result objects, while the official controller still returns success: src/controllers/ticketController.js:776-785.
 
-The isolated `csrf-csrf` GET-token/POST-validation round trip passed. That refutes the broad claim that the installed middleware is intrinsically broken; the verified issue is that session-authenticated APIs are outside its mounted scope. Add behavioral tests for cross-site and same-site/subdomain requests, and exempt only bearer/API-key calls from the session CSRF requirement.
+Document the supported subset until the remaining jobs are implemented. Required jobs must fail observably, and SLA tests must cover schedules, grace periods, holidays/business hours, est_duedate, reopen, transfer, and overdue transitions.
 
-### H-03 — Ticket lifecycle and operational workflows are incomplete
+### H-03 - Knowledge-base/topic public contracts ignore configuration
 
-- A non-staff status update always invokes `close`, so the customer reopen action closes again: `src/controllers/ticketController.js:127-143` and `src/public/js/spa.js:515-535`.
-- The safe fix is not to honor an arbitrary customer-supplied `status_id`. Expose named close/reopen operations with server-side allowed-transition policy, and define whether/how a reply may reopen a closed ticket.
-- Reply/note and update sequences contain multiple nontransactional writes; update event logging can precede later validation or the final update: `src/sdk/services/tickets.js:542-654` and `680-758`.
-- Merge moves entries and collaborators but not the complete old event graph: `src/sdk/services/tickets.js:835-869`.
-- No attachment implementation exists under `src`, despite attachment fields in OpenAPI.
-- Ticket create/reply does not send outbound notifications. Email is used only for account verification/reset flows.
-- Inbound email and SLA/ticket monitoring are placeholders: `src/controllers/systemController.js:53-60`.
-- Task routes are read-only: `src/routes/tasks.js:11-18`.
+- Public FAQ routes do not consult enable_kb: src/routes/faq.js:11-27. The SPA always shows/fetches knowledge-base content: src/public/js/spa.js:282-291, 1047-1127, 1386-1416.
+- Public FAQ detail includes internal notes: src/controllers/faqController.js:149-160.
+- Public topic detail exposes operational fields such as notes, SLA, numbering, department, and default staff/team assignment: src/controllers/topicController.js:113-159.
+- Topic detail exposes form headers but not fields, and customer create submits only topic, subject, and message: src/public/js/spa.js:947-984, 1263-1268.
+- Topic and FAQ views consume only the first API page; FAQ search filters that partial set client-side: src/public/js/spa.js:1022-1042, 1072-1118.
 
-These are product API requirements for the MVP even though most are outside osTicket's small external create/cron API.
+Enforce enable_kb server-side and in navigation, publish explicit FAQ/topic allowlists, deliver the accepted dynamic form schema, and make pagination/search server-complete.
 
-### H-04 — OpenAPI and support claims do not describe the running system
+### H-04 - OpenAPI is a route inventory, not a proven client contract
 
-- OpenAPI documents the compatibility route under the wrong server base.
-- Create requires `email`, `name`, and camelCase `topicId`, while native create requires an authenticated user and consumes `topic_id`: `docs/openapi.json:1520-1543` and `src/controllers/ticketController.js:53-104`.
-- Reply documents `body`, while the controller consumes `message`: `docs/openapi.json:1572-1605` and `src/controllers/ticketController.js:165-178`.
-- Many implemented auth, CRUD, merge, bulk, setting, and filter operations are absent; several documented fields and response envelopes are not implemented.
-- `README.md:3` and `docs/SCHEMA.md:3-8` claim compatibility with osTicket v1.8+, but there is no schema-version detection or compatibility layer. Direct queries require much newer tables and columns.
-- Runtime assumes generated dynamic tables such as `ticket__cdata`, which are not created by the raw install SQL; a valid integration fixture must complete osTicket bootstrap.
+- The generator explicitly calls itself a hand-maintained route catalog: scripts/generate-openapi.js:1-9.
+- Two global servers, /api/v1 and /, apply to a path set that mixes native /tickets and official /api/tickets.json. A normal client misroutes one family: docs/openapi.json:15-23, 6096-6185.
+- csrfHeader is declared but unused by operations, even though session mutations require it: scripts/generate-openapi.js:1380-1384.
+- /auth/refresh documents no required token body, and legacy fields/attachments/responses diverge from runtime.
+- Generation embeds a timestamp and is not checked for a clean diff: scripts/generate-openapi.js:2104-2114.
+- Contract tests assert selected path/security presence only: test/openapi.contract.test.js:9-46.
 
-Declare MySQL/osTicket v1.18.x as the first supported target. Expand the range only after versioned fixture tests pass. Rebuild OpenAPI from the accepted runtime contracts and smoke-test a generated client.
+Use a single root server with full paths or correct per-operation servers, model conditional cookie-plus-CSRF security, validate requests/responses against the live app, regenerate deterministically in CI, and smoke-test a generated client.
 
-### H-05 — PostgreSQL is advertised but is not operational
+### H-05 - CSRF, throttling, proxy, and production email assumptions need hardening
 
-- `src/sdk/connection.js:102-109` forwards SQL without translating placeholders.
-- Services use MySQL `?` placeholders and MySQL-only syntax such as `INSERT ... SET`, backticks, `NOW()`, and `CURDATE()`.
-- Insert paths expect MySQL `insertId`, while the PostgreSQL adapter returns `result.rows`; ticket create is one example at `src/sdk/services/tickets.js:479-487`.
-- `docs/sdk.md:667` nevertheless states that both dialects are supported.
+- apiSessionCsrf skips validation when a bearer/API-key header merely exists, before that credential is validated; authenticate can then fall back to the session: src/app.js:125-148 and src/middleware/auth.js:109-129.
+- API authentication receives only the generic 100-per-15-minute limiter, while HTML login/reset routes are outside it: src/config/index.js:44-50, src/app.js:113-148, src/routes/html.js:176-331.
+- trust proxy is unconditionally one hop while rate limiting and API-key IP checks rely on req.ip: src/app.js:46-47 and src/middleware/auth.js:52-61.
+- Admin SSR does not enforce the API session idle check: src/routes/admin.js:14-28 versus src/middleware/auth.js:81-103.
+- Without AWS credentials, email falls back to a mock that logs recipient, subject, and full HTML while reporting success: src/lib/email.js:28-36 and src/lib/ticketNotifications.js:54-91.
 
-Remove PostgreSQL from the supported/configurable surface and fail fast for that dialect, or fund it as a separate implementation with migrations, SQL compilation, `RETURNING`, and complete service integration tests. It should not remain an untested implied capability.
+Exempt CSRF only after a non-session credential is successfully authenticated, add dedicated login/reset throttles, make trusted proxies explicit deployment configuration, apply one idle/revocation policy, and fail closed for production email unless an explicit mock mode is enabled.
 
-### H-06 — Production session and error behavior needs hardening
+### H-06 - Documentation and completion state have drifted
 
-- Login does not regenerate the session ID: `src/controllers/authController.js:63-66`.
-- Logout destroys the session but does not revoke bearer credentials: `src/controllers/authController.js:72-77`.
-- Express's default in-memory session store is used: `src/app.js:68-79`.
-- Admin HTML guards bypass the API idle-timeout logic: `src/routes/admin.js:14-28`.
-- Native 500 responses return `err.message` in production, and HTML error fields are interpolated without escaping: `src/middleware/errorHandler.js:105-151`.
-- `requireVerified` awaits a database call without an error boundary while mounted directly under Express 4: `src/middleware/auth.js:246-256` and `src/routes/tickets.js:27-28`.
+- README.md:3 and docs/SCHEMA.md:3-10 still claim osTicket v1.8+ interoperability, while the plan correctly pins v1.18.4.
+- docs/sdk.md:54-56, 667, 682 advertises PostgreSQL although runtime now fails fast at src/config/index.js:79-86 and src/sdk/connection.js:54-59.
+- TODO.md:9-10 and docs/TODO.md:41-56 leave implemented FAQ, attachment, notification, canned-response, and cron work unchecked or conflate it with still-missing features.
+- plan/PLAN.md retains the old 45-test baseline and many unchecked acceptance/immediate-action items despite a detailed changelog: plan/PLAN.md:110-111, 218-229, 660-667, 725-743.
+- Browser/a11y verification is explicitly deferred and no browser script/dependency exists: plan/PLAN.md:508-509, 565-582 and package.json:9-20.
+- Example production secrets are recognizable placeholders that are not among the defaults rejected by production validation: .env.example:25, 32, 45 and src/config/index.js:88-97.
 
-Address these alongside the authentication boundary rather than deferring them as UI polish.
+Reconcile support claims, configuration examples, TODOs, and gate checklists only after the relevant behavioral tests are green. Replace known example secrets with empty required values and validate strength/placeholder patterns in production.
 
-### H-07 — Public knowledge/topic contracts ignore configuration and expose internal data
+## Prior review disposition
 
-- Public FAQ routes never consult the knowledge-base enable setting: `src/routes/faq.js:11-18`. The SPA also always renders knowledge-base actions: `src/public/js/spa.js:75-85` and `825-864`.
-- Public topic list responses expose department, priority, SLA, flags, and timestamps: `src/controllers/topicController.js:63-76`.
-- Public topic detail additionally exposes number format, internal notes, default staff/team assignment, and operational defaults: `src/controllers/topicController.js:121-160`.
-- Topic detail returns only attached form headers, not the field schema needed for rendering/validation, while customer create renders only topic, subject, and message: `src/controllers/topicController.js:113-159` and `src/public/js/spa.js:552-610`.
-- The SPA ignores FAQ and topic pagination envelopes, leaving only the first default page reachable: `src/public/js/spa.js:602-610` and `643-665`.
+| Prior finding | Current disposition |
+|---|---|
+| C-01 purpose JWT crossover | **Resolved for normal REST access tokens.** Reopened as a distinct MCP token/principal problem in current C-01. |
+| C-02 API key becomes native administrator | **Partial.** Official REST capability gates improved; generic profile auth and MCP still accept/escalate API-key principals. |
+| C-03 customer notes/events/identity disclosure | **Partial.** REST thread/event privacy improved; MCP thread and note attachments remain unsafe; public DTOs should become allowlists. |
+| C-04 invalid help_topic.isactive query | **Resolved.** Topic selection uses flags/ispublic at src/sdk/services/tickets.js:643-658. |
+| C-05 schema and transaction failures | **Partial.** Core create/reply/note are materially improved; forms, filters, merge, update/bulk, reply files, and stock interop remain open. |
+| C-06 staff RBAC and visibility | **Partial.** Read scoping and note/merge checks landed; mutation coverage across REST/admin/tasks/MCP remains incomplete. |
+| C-07 official API parity effectively zero | **Superseded.** All four routes now exist, but exact behavior is not proven and material JSON/XML/email/cron gaps remain. |
+| H-01 organization/department/profile boundaries | **Open.** |
+| H-02 CSRF/rate limiting | **Partial.** Baseline session CSRF exists; header exemption, OAuth login CSRF, HTML throttling, and proxy assumptions remain. |
+| H-03 ticket lifecycle/operations | **Partial.** Attachments, notifications, tasks, UI mutations, and locks landed; merge, files, email, SLA, and atomicity remain. |
+| H-04 OpenAPI/support claims | **Partial.** Coverage is broad, but base paths, schemas, conditional security, client proof, and support claims drift. |
+| H-05 PostgreSQL advertised but broken | **Runtime resolved.** The app fails fast; documentation/config/dependency surface is stale. |
+| H-06 production session/error handling | **Partial.** Error and optional Redis work landed; revocation, admin idle, email fail-closed, and secrets remain. |
+| H-07 public KB/topic contract | **Open.** |
 
-Enforce knowledge-base disablement at the API and UI. Define a minimal public topic allowlist plus a public dynamic-field schema; validate submitted dynamic values server-side and render the same contract in customer create.
+## UI assessment
 
-## MVP UI assessment
+The UI is no longer the thin/read-only surface described by the previous report. Source inspection confirms meaningful progress:
 
-### Customer portal — not MVP-safe
-
-| Workflow | Current state | MVP requirement |
+| Surface | Progress verified | Remaining release gate |
 |---|---|---|
-| Login/account | Invalid-login redirects are misclassified as success by the fetch flow, so the inline error is lost and a reload occurs; reset/profile flows are not discoverable | One login service/principal, inline success/error states, discoverable register/verify/reset/profile/logout |
-| Ticket list | First 25 only; no complete pagination/search | Status/search plus complete pagination with preserved state |
-| Thread | Includes internal notes; first/oldest 25 only; a new reply can appear to vanish | Public-field allowlist, newest activity, load older, immediate posted reply |
-| Lifecycle | Close exists; reopen closes again | Named, server-authorized customer close/reopen transitions with policy checks and audit events |
-| Attachments | None | Validated upload, authorized download, thread association and display |
-| Topics/knowledge | Topic/form data is unsafe or incomplete; FAQ/topics stop at the first page; KB disablement is ignored | Public topic/form schema, server-side KB toggle, and complete pagination |
-| Session recovery | Client/server idle behavior differs and drafts are not protected | Reauthentication path that preserves drafts and terminates the server session coherently |
-| Accessibility | Click-only table rows and FAQ headings; dynamic errors are not announced | Keyboard operation, visible focus, semantic controls/live errors, 360 px responsive acceptance |
+| Customer portal | Discoverable account flows, search/status/pagination, newest thread plus load older, draft persistence, close/reopen, attachments, notification feedback, skip link/live errors | Backend privacy and identity fixes; KB/forms; full pagination; browser/a11y proof |
+| Staff desk | Scoped queue GET, search/filter/pagination, detail thread, reply/canned response, note, assign/transfer, close/reopen, attachments, soft-lock feedback | Server-side permission checks on every POST; target/resource scope; attachment fix; browser proof |
+| Administration | Broad configuration plus FAQ CRUD/search, production error handling, optional Redis | Role-policy consistency, dashboard data scope, docs/config truth, operational validation |
 
-Relevant evidence includes `src/public/js/spa.js:278-319`, `361-435`, `515-584`, `643-720`, and `797-925`. The responsive CSS baseline is reasonable, but it does not solve interaction semantics.
+Representative UI evidence is at src/public/js/spa.js:204-227, 475-594, 656-855, 947-1127 and src/routes/admin.js:359-597, 607-941, 971-1176, 2668-2810.
 
-### Staff desk — not operational
+Do not remove or hide the new UI. Fix the shared server boundaries first, then use browser tests to verify the workflows already present.
 
-- Dashboard, list, and detail ignore department/assignment policy.
-- Ticket detail is metadata, thread, and Back only: `src/routes/admin.js:539-575`.
-- There is no per-ticket reply, internal note, canned response, assignment/team transfer, department transfer, status, close/reopen, merge, or attachment workflow.
-- The queue exposes only a status select. Department/staff query support is not surfaced, search/saved queues are absent, `staff=unassigned` does not match the handler's `staff_id`, and pagination drops filters: `src/routes/admin.js:284`, `311-405`, and `473-483`.
-- Bulk controls are administrator-only rather than permission-driven: `src/routes/admin.js:370-430`.
+## Revised red/green delivery plan
 
-The first staff slice should be a real queue plus one complete, permission-checked ticket-detail workflow. Do not add a note form before the customer-note privacy gate passes.
+### P0 - Contain and repair the trust boundary
 
-### Administration — broad but incomplete
+1. Keep MCP disabled and add a production assertion/documented warning.
+2. Write failing MCP tests for redirect/code theft, API-key escalation, token purpose, cross-principal transport sessions, staff scope, and customer notes.
+3. Repair OAuth and MCP principal/session validation.
+4. Introduce one operation-aware ticket authorization service and call it from REST, admin POST handlers, tasks, and MCP.
+5. Add source-and-target authorization for merge and every relationship mutation.
 
-Existing configuration pages provide useful coverage, but they sit on an incomplete authorization model. FAQ administration is read-only, the SPA ignores the knowledge-base enable flag, and staff/customer profile identity is confused. Status, priority, custom-form, channel, and saved-queue configuration can follow the operational staff slice rather than block its first release.
+**Exit:** denied requests fail server-side across every interface, independent of UI controls.
 
-## Reconciliation with `plan/FINDINGS.GROK.md`
+### P1 - Close customer privacy and write-integrity gaps
 
-Confirmed from the earlier review:
+1. Add failing tests for note attachments, foreign entry IDs, organization/department/profile access, colliding principal IDs, and account/role revocation.
+2. Make attachment read/write policy entry-aware and transactional with replies.
+3. Split principal-specific profile routes and define public/self/staff DTO allowlists.
+4. Enforce live account state and bounded credential revocation.
+5. Fix CSRF credential selection, auth/reset throttles, proxy configuration, production email mode, and server-side file limits.
 
-- Legacy JSON create is a stub; XML/email and attachments are absent.
-- Ticket outbound notification and inbound email are not wired.
-- SLA/cron behavior is incomplete.
-- Customer reopen is broken.
-- Staff visibility is global and `requirePermission` is unused.
-- Staff ticket detail is read-only and the test suite is thin.
+**Exit:** customers cannot retrieve or mutate internal/foreign records, and stale/disabled principals lose access within the documented bound.
 
-Corrections and material additions:
+### P2 - Make shared-database writes stock-compatible
 
-- The prior **65–75% product REST** estimate is too optimistic. Native create fails on the current standard schema, and core create/reply/note/event writes do not satisfy strict-schema invariants.
-- The customer UI is not an adequate minimal portal while internal notes, login result handling, reopen, and pagination are broken.
-- FAQ text search exists in the API; the missing piece is the UI/admin workflow.
-- The server god-router is `src/routes/admin.js`, not the browser `admin.js` asset.
-- Staff portal login already redirects to `/admin`; the more important defect is inconsistent principal construction between HTML and API login.
-- The isolated CSRF middleware works. The actionable defect is incomplete mounting/coverage for session-authenticated APIs.
-- The purpose-token authentication flaw, API-key administrator bypass, note disclosure, invalid topic query, and required-column write failures were not captured by the earlier severity assessment.
+1. Bootstrap an actual pinned v1.18.4 installation and add strict-mode PHP/Node round trips.
+2. Implement topic/form field schema, validation, form_entry/value persistence, and cdata projection in one create transaction.
+3. Match stock filter action/config/matching semantics and move filter effects inside creation.
+4. Refactor update/bulk into one lifecycle/event transaction.
+5. Either implement stock merge representation and side effects or disable/label merge experimental.
 
-## Recommended red/green delivery sequence
+**Exit:** stock PHP can view/edit/reply to Node-created records and Nodeticket can safely operate on PHP-created records across custom forms, filters, lifecycle, and merge cases.
 
-### Gate A0 — Repair trust boundaries and data isolation
+### P3 - Prove the official HTTP contract
 
-Write failing behavioral tests first for:
+1. Create a stock-derived JSON/XML corpus and differential runner.
+2. Fix dynamic fields, message/file encodings, priority/options, notification flags, XML attributes/CDATA, validation, and exact responses.
+3. Replace minimal MIME handling and add authorized, atomic, idempotent email reply processing.
+4. Define and implement the intended cron scope; cover job effects, SLA est_duedate/schedules, and error behavior.
+5. Exercise create-only, cron-only, inactive, wrong-IP, and wrong-capability keys on every official route.
 
-- Access versus refresh/reset/verification token separation.
-- Fail-closed principal types and account-state revalidation.
-- API-key create/cron capability isolation.
-- Customer-visible thread/event field allowlists.
-- Staff department/assignment/role visibility across REST, SSR, and MCP.
-- Organization, private-department, and self-profile access.
-- Knowledge-base disablement and public topic-field allowlists.
-- Named customer close/reopen transition and reply-on-closed policy.
-- Session CSRF behavior and rate limiting on every route alias.
+**Exit:** normalized stock and Nodeticket results match for the accepted v1.18.4 corpus.
 
-This gate is green only when denied requests fail on the server regardless of UI state.
+### P4 - Turn contracts into required delivery gates
 
-### Gate A1 — Establish a real osTicket interoperability fixture
+1. Fix OpenAPI servers, security, payloads, and responses; generate deterministically.
+2. Validate live requests/responses and run a generated-client smoke test.
+3. Enable required MySQL/stock fixture jobs in CI; fail on unavailable required infrastructure.
+4. Add Chromium customer/staff smoke tests and focused accessibility checks.
+5. Reconcile README, SCHEMA, SDK docs, TODOs, PLAN checkboxes, and production examples with the proven support matrix.
 
-- Pin the first supported database target to fully bootstrapped MySQL/osTicket v1.18.4 in strict mode.
-- Make native create/reply/note/update/bulk/merge tests red against that fixture.
-- Replace sequential ticket writes with one transactional creation kernel.
-- Preserve configured numbering, dynamic forms, topic/filter/status/priority/SLA/assignment defaults, required thread/event context, collaborators, and notifications.
-- Add failure injection and bidirectional stock-PHP interoperability tests.
+**Exit:** CI makes schema, parity, authorization, client-contract, and critical browser regressions visible before merge.
 
-Do not test source structure or development process; test observable HTTP behavior and the database object graph.
+## Release exit criteria
 
-### Gate A2 — Deliver exact JSON compatibility
+Do not call the project release-ready or osTicket-compatible until all are true:
 
-- Add a dedicated `/api/tickets.json` route outside the native ticket router.
-- Enforce active key, exact source IP, and `can_create_tickets` without granting a native principal.
-- Match stock fields, validation, defaults, filtering, attachment behavior, status codes, and the bare ticket-number response.
-- Differentially submit the same corpus to stock v1.18.4 and Nodeticket, normalizing generated IDs before comparison.
+- MCP is either disabled as unsupported or passes its OAuth, token, principal, session-binding, privacy, and RBAC tests.
+- Every ticket/task mutation enforces the accepted role permission and resource scope across REST, admin SSR, and MCP.
+- Customers cannot access internal-note attachments, foreign entries, private organization/department data, or another principal's profile.
+- Account disablement and authorization changes revoke or revalidate access within a documented bound.
+- Dynamic forms, filters, lifecycle events, and merge behavior pass strict stock-database and bidirectional PHP tests.
+- JSON, XML, email, and cron pass the accepted differential v1.18.4 corpus.
+- OpenAPI can drive a generated client against the live fixture.
+- Required fixture jobs run in CI without green-by-skip behavior.
+- Customer and staff critical paths pass browser smoke and targeted accessibility checks.
+- Support/version/dialect claims match the tested matrix.
 
-### Gate A3 — Complete the official API surface
+## Recommended first implementation slice
 
-- Add XML create with semantic equivalence to JSON.
-- Add MIME email new-ticket/reply threading, duplicate Message-ID handling, and attachments.
-- Add `POST /api/tasks/cron` with `can_exec_cron` and observable jobs that actually run.
-- Cover missing, invalid, inactive, wrong-IP, and wrong-capability keys for every endpoint.
+Start with **P0 trust boundary and authorization**, using red tests before production changes:
 
-At the end of A3, the official parity matrix must be completely green.
+1. Reject API-key principals from MCP OAuth/tools.
+2. Reproduce and close arbitrary-redirect authorization-code theft.
+3. Centralize ticket operation authorization.
+4. Apply it to admin POST handlers and MCP.
+5. Add customer private-note and attachment regressions.
 
-### Gate A4 — Harden the native product API
-
-- Complete permissioned ticket lifecycle, attachments/download authorization, outbound notifications, SLA/overdue processing, tasks, pagination/search, and safe merge behavior.
-- Publish a minimal topic/dynamic-form field schema and validate submitted values against it.
-- Remove accidental `/api` native aliases and align rate limits/CSRF/session handling.
-- Reconcile OpenAPI with runtime payloads and generated-client smoke tests.
-- Either fail fast for PostgreSQL or implement and fixture-test it separately.
-
-### Gate U0 — UI safety and contract
-
-- Consume the safe thread/event contracts and unified login principal.
-- Consume the public topic/dynamic-form contract, enforce KB disablement, and complete ticket/thread/topic/FAQ pagination.
-- Use named close/reopen operations and the accepted transition policy.
-- Prove staff queue/detail scoping before exposing mutations.
-- Keep the existing configuration UI stable while contracts change.
-
-### Gate U1 — Staff operational vertical slice
-
-- Queue: search, status, department, assignee/team, priority, overdue, sort, and query-preserving pagination.
-- Detail: reply, distinct internal note, canned response, assignment/team, transfer, status, close/reopen, and audit feedback.
-- Enforce the same permissions at endpoint and control level.
-- Include keyboard operation, visible focus, announced errors, and responsive acceptance in this first staff slice rather than retrofitting it later.
-
-### Gate U2 — Attachments and notifications
-
-- Customer and staff upload/download UI on the authorized attachment API.
-- Ticket create/reply notifications with visible delivery failure behavior.
-- Email-created ticket/reply/attachment presentation.
-
-### Gate U3 — Customer hardening and accessibility
-
-- Discoverable account lifecycle and explicit states.
-- Ticket search/filter/pagination, newest-thread behavior, and draft-preserving reauthentication.
-- Keyboard, focus, live-region, responsive, and automated accessibility/browser acceptance.
-
-### Gate U4 — Administration and production readiness
-
-- FAQ CRUD/search, status/priority/forms/channels, and saved queues. Server-side knowledge-base enablement already passed at U0.
-- Durable session store, coherent idle/logout/revocation behavior, safe production errors, and vendored/fallback frontend dependencies.
-- Browser matrix, accessibility checks, and production-session smoke tests.
-
-## Exit criteria before MVP UI feature work
-
-API work is ready to hand off to UI only when all of the following are true:
-
-- Purpose tokens cannot authenticate as access tokens, and API keys cannot become native principals.
-- Customers cannot retrieve internal notes, internal events, or private identity fields.
-- Staff visibility and mutations obey department, assignment, team/referral, and role permissions across all interfaces.
-- Disabled knowledge-base content is unavailable through both API and UI; public topics expose only the accepted field/form schema.
-- Native create/read/reply/update pass against a bootstrapped strict v1.18.4 fixture with rollback guarantees.
-- JSON/XML/email/cron official routes pass differential contract tests against stock v1.18.4.
-- OpenAPI describes and successfully calls the live native API.
-- Close/reopen and pagination are correct behavioral contracts.
-- The expanded suite includes HTTP, database, authorization, and browser tests and remains green alongside the existing 45 tests.
-
-This sequence intentionally puts API and data-contract parity ahead of UI expansion while retaining the useful existing configuration work.
+That slice removes the highest-impact exploit paths and creates the shared authorization seam needed by the remaining work.
