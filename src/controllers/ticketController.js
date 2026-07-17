@@ -6,6 +6,7 @@ const { getSdk } = require('../lib/sdk');
 const db = require('../lib/db');
 const { ApiError } = require('../middleware/errorHandler');
 const { applyFilters } = require('./filterController');
+const { publicTicketDetail } = require('../lib/authz');
 
 /**
  * List tickets
@@ -18,6 +19,16 @@ const list = async (req, res) => {
     filters.user_id = req.auth.id;
   }
 
+  // Staff department / assignment visibility
+  if (req.auth?.type === 'staff') {
+    filters.staff_scope = req.auth;
+  }
+
+  // API keys cannot list native tickets
+  if (req.auth?.type === 'apikey') {
+    throw ApiError.forbidden('Access denied');
+  }
+
   const result = await getSdk().tickets.list(filters);
 
   res.json({ success: true, data: result.data, pagination: result.pagination });
@@ -27,7 +38,10 @@ const list = async (req, res) => {
  * Get ticket details
  */
 const get = async (req, res) => {
-  const data = await getSdk().tickets.get(req.params.id);
+  let data = await getSdk().tickets.get(req.params.id);
+  if (req.auth?.type === 'user') {
+    data = publicTicketDetail(data);
+  }
   res.json({ success: true, data });
 };
 
@@ -35,14 +49,21 @@ const get = async (req, res) => {
  * Get ticket thread entries
  */
 const getThread = async (req, res) => {
-  const result = await getSdk().tickets.getThread(req.params.id, req.query);
+  const publicOnly = req.auth?.type === 'user';
+  const result = await getSdk().tickets.getThread(req.params.id, {
+    ...req.query,
+    publicOnly,
+  });
   res.json({ success: true, data: result.data, pagination: result.pagination });
 };
 
 /**
- * Get ticket events
+ * Get ticket events — staff only (internal audit stream)
  */
 const getEvents = async (req, res) => {
+  if (req.auth?.type !== 'staff') {
+    throw ApiError.forbidden('Staff access required');
+  }
   const data = await getSdk().tickets.getEvents(req.params.id);
   res.json({ success: true, data });
 };
@@ -62,6 +83,7 @@ const create = async (req, res) => {
   const conn = sdk.connection;
 
   // Load topic defaults so filter can see/override them
+  // Use flags/ispublic (osTicket v1.18) — not nonexistent isactive column
   const topic = await conn.queryOne(
     `SELECT ht.topic_id, ht.dept_id, ht.priority_id, ht.sla_id
      FROM ${conn.table('help_topic')} ht WHERE ht.topic_id = ?`,
@@ -103,10 +125,13 @@ const create = async (req, res) => {
     source: 'Web',
   });
 
-  // Apply any non-reject filter field updates
+  // Apply any non-reject filter field updates (only known ticket columns)
+  const allowedFilterCols = new Set([
+    'dept_id', 'topic_id', 'sla_id', 'staff_id', 'team_id', 'status_id', 'duedate', 'isoverdue',
+  ]);
   const updateFields = {};
   for (const [k, v] of Object.entries(filterResult || {})) {
-    if (!k.startsWith('_')) updateFields[k] = v;
+    if (!k.startsWith('_') && allowedFilterCols.has(k)) updateFields[k] = v;
   }
   if (Object.keys(updateFields).length > 0) {
     const cols = [];
@@ -123,23 +148,38 @@ const create = async (req, res) => {
 
 /**
  * Update ticket
+ *
+ * Customers: only named actions close | reopen (never arbitrary status_id).
+ * Staff: field updates as before.
  */
 const update = async (req, res) => {
   const { id } = req.params;
-  const { status_id, staff_id, dept_id, team_id, topic_id, sla_id, duedate, isoverdue } = req.body;
-  const isStaff = req.auth?.type === 'staff' || req.auth?.type === 'apikey';
+  const { status_id, staff_id, dept_id, team_id, topic_id, sla_id, duedate, isoverdue, action } = req.body;
+  const isStaff = req.auth?.type === 'staff';
 
-  // Users can only close their own tickets — HTTP-layer access control
+  // Users — named close/reopen only
   if (!isStaff) {
-    if (status_id === undefined) {
-      throw ApiError.forbidden('Users can only update ticket status');
+    if (req.auth?.type !== 'user') {
+      throw ApiError.forbidden('Access denied');
     }
-    // Delegate close to the SDK (it finds closed status)
-    const data = await getSdk().tickets.close(id, {
-      staffId: null,
-      username: req.auth?.name || '',
-    });
-    return res.json({ success: true, message: 'Ticket updated', data });
+
+    const named = action === 'close' || action === 'reopen'
+      ? action
+      : null;
+
+    // Reject bare status_id without action to prevent reopen-as-close bugs
+    if (!named) {
+      throw ApiError.badRequest('Users must specify action: "close" or "reopen"');
+    }
+
+    const username = req.auth?.name || '';
+    if (named === 'close') {
+      const data = await getSdk().tickets.close(id, { staffId: null, username });
+      return res.json({ success: true, message: 'Ticket closed', data });
+    }
+
+    const data = await getSdk().tickets.reopen(id, { staffId: null, username });
+    return res.json({ success: true, message: 'Ticket reopened', data });
   }
 
   const changes = {};
@@ -152,7 +192,23 @@ const update = async (req, res) => {
   if (duedate !== undefined) changes.duedate = duedate;
   if (isoverdue !== undefined) changes.isoverdue = isoverdue;
 
-  const staffId = req.auth?.type === 'staff' ? req.auth.id : null;
+  // Named staff actions
+  if (action === 'close') {
+    const data = await getSdk().tickets.close(id, {
+      staffId: req.auth.id,
+      username: req.auth?.name || req.auth?.username || '',
+    });
+    return res.json({ success: true, message: 'Ticket closed', data });
+  }
+  if (action === 'reopen') {
+    const data = await getSdk().tickets.reopen(id, {
+      staffId: req.auth.id,
+      username: req.auth?.name || req.auth?.username || '',
+    });
+    return res.json({ success: true, message: 'Ticket reopened', data });
+  }
+
+  const staffId = req.auth.id;
   const username = req.auth?.name || req.auth?.username || '';
 
   const data = await getSdk().tickets.update(id, changes, { staffId, username });
@@ -165,11 +221,11 @@ const update = async (req, res) => {
 const reply = async (req, res) => {
   const { id } = req.params;
   const { message, format } = req.body;
-  const isStaff = req.auth?.type === 'staff' || req.auth?.type === 'apikey';
+  const isStaff = req.auth?.type === 'staff';
   const poster = req.auth?.name || req.auth?.username || (isStaff ? 'Staff' : 'User');
 
   const data = await getSdk().tickets.reply(id, {
-    staffId: isStaff ? (req.auth?.id || 0) : null,
+    staffId: isStaff ? req.auth.id : null,
     userId: !isStaff ? req.auth?.id : null,
     body: message,
     format: format || 'text',
@@ -188,8 +244,12 @@ const addNote = async (req, res) => {
   const { title, note } = req.body;
   const poster = req.auth?.name || req.auth?.username || 'Staff';
 
+  if (req.auth?.type !== 'staff') {
+    throw ApiError.forbidden('Staff access required');
+  }
+
   const data = await getSdk().tickets.addNote(id, {
-    staffId: req.auth?.id || 0,
+    staffId: req.auth.id,
     title,
     body: note,
     poster,
@@ -204,7 +264,12 @@ const addNote = async (req, res) => {
 const merge = async (req, res) => {
   const { id } = req.params;
   const { target_ticket_id } = req.body;
-  const staffId = req.auth?.id || 0;
+
+  if (req.auth?.type !== 'staff') {
+    throw ApiError.forbidden('Staff access required');
+  }
+
+  const staffId = req.auth.id;
   const username = req.auth?.name || req.auth?.username || 'Staff';
 
   const data = await getSdk().tickets.merge(id, {

@@ -189,6 +189,34 @@ router.post('/login', express.urlencoded({ extended: true }), asyncHandler(async
         return res.redirect('/login?error=invalid');
       }
 
+      const { parsePermissions } = require('../lib/authz');
+      const deptIds = [];
+      if (staff.dept_id != null) deptIds.push(parseInt(staff.dept_id, 10));
+      try {
+        const extra = await db.query(
+          `SELECT dept_id FROM ${db.table('staff_dept_access')} WHERE staff_id = ?`,
+          [staff.staff_id]
+        );
+        for (const row of extra) {
+          const d = parseInt(row.dept_id, 10);
+          if (!isNaN(d) && !deptIds.includes(d)) deptIds.push(d);
+        }
+      } catch { /* ignore */ }
+      let teamIds = [];
+      try {
+        const teams = await db.query(
+          `SELECT team_id FROM ${db.table('team_member')} WHERE staff_id = ?`,
+          [staff.staff_id]
+        );
+        teamIds = teams.map((t) => parseInt(t.team_id, 10)).filter((n) => !isNaN(n));
+      } catch { /* ignore */ }
+
+      await new Promise((resolve) => {
+        if (typeof req.session.regenerate === 'function') {
+          req.session.regenerate(() => resolve());
+        } else resolve();
+      });
+
       req.session.user = {
         id: staff.staff_id,
         username: staff.username,
@@ -196,8 +224,14 @@ router.post('/login', express.urlencoded({ extended: true }), asyncHandler(async
         email: staff.email,
         isAdmin: !!staff.isadmin,
         type: 'staff',
-        deptId: staff.dept_id
+        deptId: staff.dept_id,
+        roleId: staff.role_id,
+        assignedOnly: !!staff.assigned_only,
+        deptIds,
+        teamIds,
+        permissions: parsePermissions(staff.role_permissions),
       };
+      req.session.lastActivity = Date.now();
 
       return res.redirect('/admin');
     } else {
@@ -218,6 +252,12 @@ router.post('/login', express.urlencoded({ extended: true }), asyncHandler(async
         return res.redirect('/login?error=invalid');
       }
 
+      await new Promise((resolve) => {
+        if (typeof req.session.regenerate === 'function') {
+          req.session.regenerate(() => resolve());
+        } else resolve();
+      });
+
       req.session.user = {
         id: account.user_id,
         username: account.username,
@@ -227,6 +267,7 @@ router.post('/login', express.urlencoded({ extended: true }), asyncHandler(async
         type: 'user',
         verified: account.status === 1
       };
+      req.session.lastActivity = Date.now();
 
       return res.redirect('/#?yg-app=tickets');
     }
@@ -283,8 +324,6 @@ router.post('/forgot-password', express.urlencoded({ extended: true }), asyncHan
   const base = await getBaseData(req);
   const { email } = req.body;
 
-  const bcrypt = require('bcryptjs');
-  const jwt = require('jsonwebtoken');
   const config = require('../config');
 
   let resetUrl = null;
@@ -319,10 +358,11 @@ router.post('/forgot-password', express.urlencoded({ extended: true }), asyncHan
     }
 
     if (resetType) {
-      const resetToken = jwt.sign(
-        { id: resetId, type: resetType, purpose: 'password-reset' },
-        config.jwt.secret,
-        { expiresIn: '1h' }
+      const { signPurposeToken, TOKEN_USE } = require('../lib/tokens');
+      const resetToken = signPurposeToken(
+        { id: resetId, type: resetType },
+        TOKEN_USE.PASSWORD_RESET,
+        '1h'
       );
 
       const helpdeskUrl = config.helpdesk.url.replace(/\/$/, '');
@@ -376,11 +416,10 @@ router.get('/reset-password', asyncHandler(async (req, res) => {
   }
 
   // Validate token before showing form
-  const jwt = require('jsonwebtoken');
-  const config = require('../config');
+  const { verifyJwt, isPurposeToken, TOKEN_USE } = require('../lib/tokens');
   try {
-    const decoded = jwt.verify(token, config.jwt.secret);
-    if (decoded.purpose !== 'password-reset') {
+    const decoded = verifyJwt(token);
+    if (!decoded || !isPurposeToken(decoded, TOKEN_USE.PASSWORD_RESET)) {
       throw new Error('Invalid token purpose');
     }
   } catch (e) {
@@ -459,14 +498,15 @@ router.post('/reset-password', express.urlencoded({ extended: true }), asyncHand
     return res.send(renderPage('Reset Password', content, base));
   }
 
-  const jwt = require('jsonwebtoken');
   const bcrypt = require('bcryptjs');
-  const config = require('../config');
+  const { verifyJwt, isPurposeToken, TOKEN_USE } = require('../lib/tokens');
 
   let decoded;
   try {
-    decoded = jwt.verify(token, config.jwt.secret);
-    if (decoded.purpose !== 'password-reset') throw new Error('Invalid token');
+    decoded = verifyJwt(token);
+    if (!decoded || !isPurposeToken(decoded, TOKEN_USE.PASSWORD_RESET)) {
+      throw new Error('Invalid token');
+    }
   } catch (e) {
     const content = `
       <div class="auth-form">

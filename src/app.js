@@ -74,12 +74,19 @@ app.use(session({
   cookie: {
     secure: config.env === 'production',
     httpOnly: true,
+    sameSite: 'lax',
     maxAge: config.session.maxAge
   }
 }));
 
 // Cookie parser (needed for CSRF double-submit cookie)
 app.use(cookieParser());
+
+// CSRF token generator (HTML + session-authenticated API)
+app.use((req, res, next) => {
+  req.csrfToken = () => generateCsrfToken(req, res);
+  next();
+});
 
 // Static files
 app.use(express.static(path.join(__dirname, 'public')));
@@ -96,8 +103,30 @@ const apiLimiter = rateLimit({
   legacyHeaders: false
 });
 
-// API routes
-app.use('/api/v1', apiLimiter);
+/**
+ * CSRF for mutating session-authenticated API calls.
+ * Exempt: safe methods, Bearer JWT, X-API-Key, and requests with no session cookie
+ * (pure token clients / first login). Browser SPA sessions must send x-csrf-token.
+ */
+const apiSessionCsrf = (req, res, next) => {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    return next();
+  }
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+    return next();
+  }
+  if (req.headers['x-api-key']) {
+    return next();
+  }
+  const sid = config.session.name;
+  if (!req.cookies?.[sid] && !req.session?.user) {
+    return next();
+  }
+  return csrfProtection(req, res, next);
+};
+
+// API routes (rate limited + session CSRF)
+app.use('/api/v1', apiLimiter, apiSessionCsrf);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/tickets', ticketRoutes);
 app.use('/api/v1/users', userRoutes);
@@ -116,14 +145,14 @@ app.use('/api/v1/canned-responses', cannedResponseRoutes);
 app.use('/api/v1/filters', filterRoutes);
 app.use('/api/v1', systemRoutes);
 
-// Legacy interoperability endpoints
-app.use('/api', ticketRoutes);
-
-// CSRF token generator (available to all HTML routes including admin)
-app.use((req, res, next) => {
-  req.csrfToken = () => generateCsrfToken(req, res);
-  next();
-});
+// Legacy interoperability — only official create path (not full native router)
+const { asyncHandler } = require('./middleware/errorHandler');
+const ticketController = require('./controllers/ticketController');
+app.post(
+  '/api/tickets.json',
+  apiLimiter,
+  asyncHandler(ticketController.createLegacy)
+);
 
 // HTML routes (CSRF protection applied to both admin and public)
 app.use('/admin', csrfProtection, adminRoutes);

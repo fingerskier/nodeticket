@@ -167,22 +167,39 @@ module.exports = (conn, data) => {
   /**
    * Format a thread entry row.
    * @param {Object} e
+   * @param {{ publicOnly?: boolean }} [opts]
    * @returns {Object}
    */
-  const formatThreadEntry = (e) => ({
-    id: e.id,
-    thread_id: e.thread_id,
-    staff_id: e.staff_id,
-    user_id: e.user_id,
-    type: e.type,
-    poster: e.poster || (e.staff_id ? `${e.firstname || ''} ${e.lastname || ''}`.trim() : e.user_name),
-    email: e.staff_id ? e.staff_email : e.user_email,
-    title: e.title,
-    body: e.body,
-    format: e.format,
-    source: e.source,
-    created: e.created,
-  });
+  const formatThreadEntry = (e, opts = {}) => {
+    const poster = e.poster || (e.staff_id ? `${e.firstname || ''} ${e.lastname || ''}`.trim() : e.user_name);
+    if (opts.publicOnly) {
+      return {
+        id: e.id,
+        thread_id: e.thread_id,
+        type: e.type,
+        poster,
+        title: e.title,
+        body: e.body,
+        format: e.format,
+        source: e.source,
+        created: e.created,
+      };
+    }
+    return {
+      id: e.id,
+      thread_id: e.thread_id,
+      staff_id: e.staff_id,
+      user_id: e.user_id,
+      type: e.type,
+      poster,
+      email: e.staff_id ? e.staff_email : e.user_email,
+      title: e.title,
+      body: e.body,
+      format: e.format,
+      source: e.source,
+      created: e.created,
+    };
+  };
 
   // ── Public methods ──────────────────────────────────────────
 
@@ -210,7 +227,7 @@ module.exports = (conn, data) => {
    * // result.data[0].ticket_id, result.pagination.total
    */
   const list = async (filters = {}) => {
-    const { status, dept_id, staff_id, user_id, topic_id, priority_id, isoverdue, search, sort, order } = filters;
+    const { status, dept_id, staff_id, user_id, topic_id, priority_id, isoverdue, search, sort, order, staff_scope } = filters;
     const { page, limit, offset } = paginate(filters.page, filters.limit);
 
     let sql = `
@@ -247,6 +264,22 @@ module.exports = (conn, data) => {
       sql += ` AND (t.number LIKE ? OR tc.subject LIKE ?)`;
       const term = `%${search}%`;
       params.push(term, term);
+    }
+
+    // Staff department / assignment visibility (set by HTTP layer)
+    if (staff_scope && typeof staff_scope === 'object') {
+      const { staffListVisibilitySql } = require('../../lib/authz');
+      // staff_scope is either a full auth object or a prebuilt clause
+      if (staff_scope.clause) {
+        sql += staff_scope.clause;
+        params.push(...(staff_scope.params || []));
+      } else {
+        const vis = staffListVisibilitySql(staff_scope, 't');
+        if (vis) {
+          sql += vis.clause;
+          params.push(...vis.params);
+        }
+      }
     }
 
     // Total count
@@ -342,6 +375,7 @@ module.exports = (conn, data) => {
    * @param {Object} [options={}]
    * @param {number|string} [options.page=1]
    * @param {number|string} [options.limit=25]
+   * @param {boolean} [options.publicOnly=false] - If true, exclude notes (type N) and strip private fields
    * @returns {Promise<{ data: Array<Object>, pagination: Object }>}
    * @throws {NotFoundError} If the ticket/thread does not exist
    *
@@ -350,6 +384,7 @@ module.exports = (conn, data) => {
    */
   const getThread = async (ticketId, options = {}) => {
     const { page, limit, offset } = paginate(options.page, options.limit);
+    const publicOnly = !!options.publicOnly;
 
     const thread = await conn.queryOne(`
       SELECT th.id FROM ${conn.table('thread')} th
@@ -361,6 +396,8 @@ module.exports = (conn, data) => {
       throw new NotFoundError('Ticket not found');
     }
 
+    const typeFilter = publicOnly ? ` AND te.type IN ('M', 'R')` : '';
+
     const entries = await conn.query(`
       SELECT te.*,
              s.firstname, s.lastname, s.email as staff_email,
@@ -369,18 +406,21 @@ module.exports = (conn, data) => {
       LEFT JOIN ${conn.table('staff')} s ON te.staff_id = s.staff_id
       LEFT JOIN ${conn.table('user')} u ON te.user_id = u.id
       LEFT JOIN ${conn.table('user_email')} ue ON u.default_email_id = ue.id
-      WHERE te.thread_id = ?
+      WHERE te.thread_id = ?${typeFilter}
       ORDER BY te.created ASC
       LIMIT ? OFFSET ?
     `, [thread.id, limit, offset]);
 
+    const totalSql = publicOnly
+      ? `SELECT COUNT(*) FROM ${conn.table('thread_entry')} WHERE thread_id = ? AND type IN ('M', 'R')`
+      : `SELECT COUNT(*) FROM ${conn.table('thread_entry')} WHERE thread_id = ?`;
     const total = parseInt(
-      await conn.queryValue(`SELECT COUNT(*) FROM ${conn.table('thread_entry')} WHERE thread_id = ?`, [thread.id]) || 0,
+      await conn.queryValue(totalSql, [thread.id]) || 0,
       10,
     );
 
     return {
-      data: entries.map(formatThreadEntry),
+      data: entries.map((e) => formatThreadEntry(e, { publicOnly })),
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     };
   };
@@ -454,7 +494,8 @@ module.exports = (conn, data) => {
       SELECT ht.*, d.id as dept_id, d.name as dept_name
       FROM ${conn.table('help_topic')} ht
       LEFT JOIN ${conn.table('department')} d ON ht.dept_id = d.id
-      WHERE ht.topic_id = ? AND ht.isactive = 1 AND ht.ispublic = 1
+      WHERE ht.topic_id = ? AND ht.ispublic = 1
+        AND (ht.flags & 1) = 1
     `, [topicId]);
 
     if (!topic) {
@@ -792,6 +833,24 @@ module.exports = (conn, data) => {
   };
 
   /**
+   * Reopen a closed ticket (sets first open status).
+   *
+   * @param {number|string} ticketId
+   * @param {Object} [options={}]
+   * @param {number|null} [options.staffId]
+   * @param {string} [options.username]
+   * @returns {Promise<{ ticket_id: number }>}
+   */
+  const reopen = async (ticketId, { staffId = null, username = '' } = {}) => {
+    const openStatus = await conn.queryOne(
+      `SELECT id FROM ${conn.table('ticket_status')} WHERE state = 'open' ORDER BY sort ASC LIMIT 1`
+    );
+    if (!openStatus) throw new ValidationError('No open status configured');
+
+    return update(ticketId, { status_id: openStatus.id }, { staffId, username });
+  };
+
+  /**
    * Merge a source ticket into a target ticket.
    *
    * Thread entries and collaborators are moved from source to target.
@@ -882,6 +941,7 @@ module.exports = (conn, data) => {
     reply,
     addNote,
     close,
+    reopen,
     merge,
   };
 };

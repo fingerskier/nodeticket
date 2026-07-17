@@ -5,11 +5,56 @@
  * JWT, sessions, and email flows remain here (HTTP-layer concerns).
  */
 
-const jwt = require('jsonwebtoken');
 const config = require('../config');
 const db = require('../lib/db');
 const { getSdk } = require('../lib/sdk');
 const { ApiError } = require('../middleware/errorHandler');
+const {
+  TOKEN_USE,
+  signAccessToken,
+  signPurposeToken,
+  verifyJwt,
+  isRefreshableAccessToken,
+  isPurposeToken,
+} = require('../lib/tokens');
+const { parsePermissions } = require('../lib/authz');
+
+/**
+ * Load department access + team membership for staff visibility.
+ */
+async function loadStaffScope(staffId, primaryDeptId) {
+  const deptIds = [];
+  if (primaryDeptId != null) {
+    const d = parseInt(primaryDeptId, 10);
+    if (!isNaN(d)) deptIds.push(d);
+  }
+
+  try {
+    const extra = await db.query(
+      `SELECT dept_id FROM ${db.table('staff_dept_access')} WHERE staff_id = ?`,
+      [staffId]
+    );
+    for (const row of extra) {
+      const d = parseInt(row.dept_id, 10);
+      if (!isNaN(d) && !deptIds.includes(d)) deptIds.push(d);
+    }
+  } catch {
+    // table may be missing on partial fixtures
+  }
+
+  let teamIds = [];
+  try {
+    const teams = await db.query(
+      `SELECT team_id FROM ${db.table('team_member')} WHERE staff_id = ?`,
+      [staffId]
+    );
+    teamIds = teams.map((t) => parseInt(t.team_id, 10)).filter((n) => !isNaN(n));
+  } catch {
+    // ignore
+  }
+
+  return { deptIds, teamIds };
+}
 
 /**
  * Login - authenticate user or staff
@@ -31,6 +76,8 @@ const login = async (req, res) => {
     const valid = await sdk.auth.verifyPassword(password, user.passwd);
     if (!valid) throw ApiError.unauthorized('Invalid credentials');
 
+    const scope = await loadStaffScope(user.staff_id, user.dept_id);
+
     userData = {
       id: user.staff_id,
       username: user.username,
@@ -40,7 +87,10 @@ const login = async (req, res) => {
       type: 'staff',
       deptId: user.dept_id,
       roleId: user.role_id,
-      permissions: user.role_permissions ? JSON.parse(user.role_permissions) : {},
+      assignedOnly: !!user.assigned_only,
+      deptIds: scope.deptIds,
+      teamIds: scope.teamIds,
+      permissions: parsePermissions(user.role_permissions),
     };
   } else {
     const account = await sdk.auth.lookupUserByCredentials(username);
@@ -60,8 +110,21 @@ const login = async (req, res) => {
     };
   }
 
-  const token = jwt.sign(userData, config.jwt.secret, { expiresIn: config.jwt.expiresIn });
+  // Rotate session id on login (session fixation)
+  await new Promise((resolve) => {
+    if (typeof req.session.regenerate === 'function') {
+      req.session.regenerate((err) => {
+        if (err) console.error('Session regenerate error:', err);
+        resolve();
+      });
+    } else {
+      resolve();
+    }
+  });
+
+  const token = signAccessToken(userData);
   req.session.user = userData;
+  req.session.lastActivity = Date.now();
 
   res.json({ success: true, token, user: userData });
 };
@@ -84,29 +147,84 @@ const me = async (req, res) => {
 };
 
 /**
- * Refresh token
+ * Refresh token — only access tokens (not purpose tokens) within max age window.
+ * Revalidates that the principal still exists and is active.
  */
 const refresh = async (req, res) => {
   const { token } = req.body;
   if (!token) throw ApiError.badRequest('Token is required');
 
-  try {
-    const decoded = jwt.verify(token, config.jwt.secret, { ignoreExpiration: true });
-    const expiresAt = decoded.exp * 1000;
-    const maxRefreshWindow = 7 * 24 * 60 * 60 * 1000;
-
-    if (Date.now() - expiresAt > maxRefreshWindow) {
-      throw ApiError.unauthorized('Token is too old to refresh');
-    }
-
-    const { iat, exp, ...userData } = decoded;
-    const newToken = jwt.sign(userData, config.jwt.secret, { expiresIn: config.jwt.expiresIn });
-
-    res.json({ success: true, token: newToken });
-  } catch (err) {
-    if (err instanceof ApiError) throw err;
+  const decoded = verifyJwt(token, { ignoreExpiration: true });
+  if (!decoded || !isRefreshableAccessToken(decoded)) {
     throw ApiError.unauthorized('Invalid token');
   }
+
+  const expiresAt = (decoded.exp || 0) * 1000;
+  const maxRefreshWindow = 7 * 24 * 60 * 60 * 1000;
+  if (expiresAt && Date.now() - expiresAt > maxRefreshWindow) {
+    throw ApiError.unauthorized('Token is too old to refresh');
+  }
+
+  // Revalidate principal status
+  if (decoded.type === 'staff') {
+    const staff = await db.queryOne(
+      `SELECT staff_id, isactive, isadmin, dept_id, role_id, assigned_only, username, firstname, lastname, email
+       FROM ${db.table('staff')} WHERE staff_id = ? AND isactive = 1`,
+      [decoded.id]
+    );
+    if (!staff) throw ApiError.unauthorized('Invalid token');
+
+    const scope = await loadStaffScope(staff.staff_id, staff.dept_id);
+    let permissions = {};
+    if (staff.role_id) {
+      const role = await db.queryOne(
+        `SELECT permissions FROM ${db.table('role')} WHERE id = ?`,
+        [staff.role_id]
+      );
+      permissions = parsePermissions(role?.permissions);
+    }
+
+    const principal = {
+      id: staff.staff_id,
+      username: staff.username,
+      name: `${staff.firstname || ''} ${staff.lastname || ''}`.trim() || staff.username,
+      email: staff.email,
+      isAdmin: !!staff.isadmin,
+      type: 'staff',
+      deptId: staff.dept_id,
+      roleId: staff.role_id,
+      assignedOnly: !!staff.assigned_only,
+      deptIds: scope.deptIds,
+      teamIds: scope.teamIds,
+      permissions,
+    };
+    return res.json({ success: true, token: signAccessToken(principal) });
+  }
+
+  if (decoded.type === 'user') {
+    const account = await db.queryOne(
+      `SELECT ua.user_id, ua.username, ua.status, u.name, ue.address as email
+       FROM ${db.table('user_account')} ua
+       JOIN ${db.table('user')} u ON ua.user_id = u.id
+       LEFT JOIN ${db.table('user_email')} ue ON u.default_email_id = ue.id
+       WHERE ua.user_id = ?`,
+      [decoded.id]
+    );
+    if (!account) throw ApiError.unauthorized('Invalid token');
+
+    const principal = {
+      id: account.user_id,
+      username: account.username,
+      name: account.name,
+      email: account.email,
+      isAdmin: false,
+      type: 'user',
+      verified: account.status === 1,
+    };
+    return res.json({ success: true, token: signAccessToken(principal) });
+  }
+
+  throw ApiError.unauthorized('Invalid token');
 };
 
 /**
@@ -149,10 +267,10 @@ const forgotPassword = async (req, res) => {
     return res.json({ success: true, message: genericMessage });
   }
 
-  const resetToken = jwt.sign(
-    { id: resetId, type: resetType, purpose: 'password-reset' },
-    config.jwt.secret,
-    { expiresIn: '1h' },
+  const resetToken = signPurposeToken(
+    { id: resetId, type: resetType },
+    TOKEN_USE.PASSWORD_RESET,
+    '1h',
   );
 
   const helpdeskUrl = config.helpdesk.url.replace(/\/$/, '');
@@ -175,15 +293,9 @@ const resetPassword = async (req, res) => {
   if (!token || !password) throw ApiError.badRequest('Token and new password are required');
   if (password.length < 8) throw ApiError.badRequest('Password must be at least 8 characters');
 
-  let decoded;
-  try {
-    decoded = jwt.verify(token, config.jwt.secret);
-  } catch (err) {
+  const decoded = verifyJwt(token);
+  if (!decoded || !isPurposeToken(decoded, TOKEN_USE.PASSWORD_RESET)) {
     throw ApiError.badRequest('Invalid or expired reset token');
-  }
-
-  if (decoded.purpose !== 'password-reset') {
-    throw ApiError.badRequest('Invalid reset token');
   }
 
   const sdk = getSdk();
@@ -255,10 +367,10 @@ const register = async (req, res) => {
   );
 
   // Generate verification token & send email
-  const verifyToken = jwt.sign(
-    { id: userId, email, purpose: 'email-verify' },
-    config.jwt.secret,
-    { expiresIn: '24h' },
+  const verifyToken = signPurposeToken(
+    { id: userId, email },
+    TOKEN_USE.EMAIL_VERIFY,
+    '24h',
   );
 
   const { sendEmail } = require('../lib/email');
@@ -279,14 +391,10 @@ const verifyEmail = async (req, res) => {
   const { token } = req.query;
   if (!token) throw ApiError.badRequest('Verification token is required');
 
-  let decoded;
-  try {
-    decoded = jwt.verify(token, config.jwt.secret);
-  } catch (err) {
+  const decoded = verifyJwt(token);
+  if (!decoded || !isPurposeToken(decoded, TOKEN_USE.EMAIL_VERIFY)) {
     throw ApiError.badRequest('Invalid or expired verification token');
   }
-
-  if (decoded.purpose !== 'email-verify') throw ApiError.badRequest('Invalid verification token');
 
   await db.query(
     `UPDATE ${db.table('user_account')} SET status = 1 WHERE user_id = ?`,
@@ -321,10 +429,10 @@ const resendVerification = async (req, res) => {
   if (!userRow) throw ApiError.badRequest('User not found');
 
   const email = userRow.address;
-  const verifyToken = jwt.sign(
-    { id: req.auth.id, email, purpose: 'email-verify' },
-    config.jwt.secret,
-    { expiresIn: '24h' },
+  const verifyToken = signPurposeToken(
+    { id: req.auth.id, email },
+    TOKEN_USE.EMAIL_VERIFY,
+    '24h',
   );
 
   const { sendEmail } = require('../lib/email');

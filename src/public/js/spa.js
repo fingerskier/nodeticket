@@ -13,9 +13,17 @@ let currentUser = null;
  * API Helper
  */
 const api = {
+  headers(extra = {}) {
+    const headers = { ...extra };
+    const csrf = window.APP_CONFIG?.csrfToken;
+    if (csrf) headers['x-csrf-token'] = csrf;
+    return headers;
+  },
+
   async get(endpoint) {
     const res = await fetch(`/api/v1${endpoint}`, {
-      credentials: 'include'
+      credentials: 'include',
+      headers: this.headers()
     });
     return res.json();
   },
@@ -23,7 +31,7 @@ const api = {
   async post(endpoint, data) {
     const res = await fetch(`/api/v1${endpoint}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.headers({ 'Content-Type': 'application/json' }),
       credentials: 'include',
       body: JSON.stringify(data)
     });
@@ -33,7 +41,7 @@ const api = {
   async put(endpoint, data) {
     const res = await fetch(`/api/v1${endpoint}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.headers({ 'Content-Type': 'application/json' }),
       credentials: 'include',
       body: JSON.stringify(data)
     });
@@ -488,23 +496,19 @@ const views = {
         });
       }
 
-      // Bind close/reopen buttons
+      // Bind close/reopen buttons (named server-side actions)
       const closeBtn = document.getElementById('closeTicketBtn');
       if (closeBtn) {
         closeBtn.addEventListener('click', async () => {
           closeBtn.disabled = true;
           closeBtn.textContent = 'Closing...';
           try {
-            const statusRes = await api.get('/statuses');
-            const closedStatus = statusRes.data?.find(s => s.state === 'closed');
-            if (closedStatus) {
-              const res = await api.put(`/tickets/${ticketId}`, { status_id: closedStatus.id });
-              if (res.success) {
-                app.gotoState('ticket', { id: ticketId });
-                return;
-              }
+            const res = await api.put(`/tickets/${ticketId}`, { action: 'close' });
+            if (res.success) {
+              app.gotoState('ticket', { id: ticketId });
+              return;
             }
-            closeBtn.textContent = 'Close failed';
+            closeBtn.textContent = res.message || 'Close failed';
           } catch (err) {
             closeBtn.textContent = 'Close failed';
           }
@@ -518,16 +522,12 @@ const views = {
           reopenBtn.disabled = true;
           reopenBtn.textContent = 'Reopening...';
           try {
-            const statusRes = await api.get('/statuses');
-            const openStatus = statusRes.data?.find(s => s.state === 'open');
-            if (openStatus) {
-              const res = await api.put(`/tickets/${ticketId}`, { status_id: openStatus.id });
-              if (res.success) {
-                app.gotoState('ticket', { id: ticketId });
-                return;
-              }
+            const res = await api.put(`/tickets/${ticketId}`, { action: 'reopen' });
+            if (res.success) {
+              app.gotoState('ticket', { id: ticketId });
+              return;
             }
-            reopenBtn.textContent = 'Reopen failed';
+            reopenBtn.textContent = res.message || 'Reopen failed';
           } catch (err) {
             reopenBtn.textContent = 'Reopen failed';
           }

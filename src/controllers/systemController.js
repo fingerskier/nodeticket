@@ -42,12 +42,15 @@ const listStatuses = async (req, res) => {
  * Run cron tasks
  */
 const runCron = async (req, res) => {
+  // API keys: capability only (never treated as staff/admin elsewhere)
   if (req.auth?.type === 'apikey') {
-    if (!req.auth.permissions.can_exec_cron) {
-      throw ApiError.forbidden('API key does not have cron permission');
+    if (!req.auth.permissions?.can_exec_cron) {
+      throw ApiError.unauthorized('API key does not have cron permission');
     }
-  } else if (!req.auth?.isAdmin) {
-    throw ApiError.forbidden('Administrator access required');
+  } else if (req.auth?.type === 'staff' && req.auth?.isAdmin) {
+    // admins may trigger cron via native API
+  } else {
+    throw ApiError.forbidden('Administrator access or cron-capable API key required');
   }
 
   // Placeholder for cron execution
