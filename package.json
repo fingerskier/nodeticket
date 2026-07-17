@@ -45,6 +45,18 @@
     "pg": "^8.11.3",
     "uuid": "^13.0.0"
   },
+  "peerDependencies": {
+    "connect-redis": "^9.0.0",
+    "redis": "^5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "connect-redis": {
+      "optional": true
+    },
+    "redis": {
+      "optional": true
+    }
+  },
   "engines": {
     "node": ">=18.0.0"
   }

@@ -33,7 +33,7 @@ See **[docs/PRODUCTION.md](docs/PRODUCTION.md)** for:
 
 - Required secrets (`SESSION_SECRET`, `JWT_SECRET`, MySQL)
 - Session regeneration / logout / CSRF / idle policy
-- Optional Redis session store for multi-instance
+- Session store: **MemoryStore default**; Redis via **optional peers** (`npm install redis connect-redis` + `SESSION_STORE=redis`)
 - External cron → `POST /api/tasks/cron`
 - Self-hosted ygdrassil pin and safe error behavior
 - Deploy smoke checklist

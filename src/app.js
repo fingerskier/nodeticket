@@ -67,8 +67,19 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Session middleware
-// Default: MemoryStore (single process). For multi-instance production, set
-// SESSION_STORE=redis and REDIS_URL (see docs/PRODUCTION.md).
+// Default: MemoryStore (single process). Multi-instance: optional peers redis +
+// connect-redis, then SESSION_STORE=redis and REDIS_URL (see docs/PRODUCTION.md).
+const { createSessionStore } = require('./lib/sessionStore');
+const sessionStoreResult = createSessionStore();
+if (sessionStoreResult.warning) {
+  console.warn(sessionStoreResult.warning);
+}
+if (sessionStoreResult.name === 'redis') {
+  console.log('Session store: redis (shared)');
+} else if (config.env !== 'test') {
+  console.log('Session store: memory (default; single process)');
+}
+
 const sessionOptions = {
   secret: config.session.secret,
   name: config.session.name,
@@ -81,31 +92,8 @@ const sessionOptions = {
     maxAge: config.session.maxAge
   }
 };
-
-if (process.env.SESSION_STORE === 'redis' && process.env.REDIS_URL) {
-  try {
-    // Optional dependency — only required when SESSION_STORE=redis
-    // eslint-disable-next-line import/no-extraneous-dependencies, global-require
-    const RedisStore = require('connect-redis').default
-      || require('connect-redis');
-    // eslint-disable-next-line global-require
-    const { createClient } = require('redis');
-    const redisClient = createClient({ url: process.env.REDIS_URL });
-    redisClient.connect().catch((err) => {
-      console.error('Redis session store connect failed:', err.message);
-    });
-    const StoreCtor = RedisStore.default || RedisStore;
-    sessionOptions.store = new StoreCtor({
-      client: redisClient,
-      prefix: 'nt:sess:',
-    });
-    console.log('Session store: redis');
-  } catch (err) {
-    console.warn(
-      'SESSION_STORE=redis requested but connect-redis/redis not installed; using MemoryStore.',
-      err.message
-    );
-  }
+if (sessionStoreResult.store) {
+  sessionOptions.store = sessionStoreResult.store;
 }
 
 app.use(session(sessionOptions));

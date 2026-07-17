@@ -714,6 +714,7 @@ This PLAN incorporates both: CODEX order, GROK product completeness after A4.
 | 2026-07-17 | **U3 customer portal hardening + ygdrassil pin:** CDN `ygdrassil@2026.7.13`. SPA: guest register/login CTAs, forgot-password links, profile nav, ticket search/filter/pagination, thread load-older (newest page first), create/reply drafts in sessionStorage, idle timeout aligned to server + full logout, skip-link / live errors / FAQ keyboard a11y. |
 | 2026-07-17 | **U4 admin FAQ + production readiness:** Admin FAQ list/search/create/edit/delete + categories; staff FAQ API lists drafts; errorHandler escapes HTML and hides internal messages in production; ygdrassil self-hosted under `public/vendor/ygdrassil` with CDN fallback; optional Redis session store; `docs/PRODUCTION.md`; README ops links; GitHub Actions unit CI. |
 | 2026-07-17 | **Soft ticket locks (stock semantics):** `lib/ticketLocks.js` — mode from `ticket_lock` (0/1/2) + `autolock_minutes`; acquire/renew/release on `lock` + `ticket.lock_id`; soft-touch on staff write paths (never blocks); admin banner; API `GET/POST .../lock` + release; cron `LockCleanup`; settings for mode/minutes. Policy: soft warn, on-first-edit (activity). Tests: `test/ticket.locks.test.js`. |
+| 2026-07-17 | **Redis sessions as optional peers:** `redis` + `connect-redis` in `peerDependencies` with `peerDependenciesMeta.optional`; MemoryStore remains default. `lib/sessionStore.js` loads peers only when `SESSION_STORE=redis` + `REDIS_URL`; clear fallback warnings. Docs in PRODUCTION.md / README. |
 
 ---
 

@@ -20,16 +20,35 @@ Optional:
 |----------|---------|
 | `SESSION_MAX_AGE` | Cookie lifetime ms (default 24h) |
 | `SESSION_IDLE_TIMEOUT` | Idle logout ms (default 30m); SPA uses same value |
-| `SESSION_STORE=redis` | Durable multi-instance sessions |
-| `REDIS_URL` | Redis connection when `SESSION_STORE=redis` |
+| `SESSION_STORE=redis` | Use Redis for sessions (multi-instance); default is MemoryStore |
+| `REDIS_URL` | Required when `SESSION_STORE=redis` (e.g. `redis://127.0.0.1:6379`) |
+| `REDIS_SESSION_PREFIX` | Redis key prefix (default `nt:sess:`) |
 | `API_RATE_LIMIT` | Requests per 15 minutes per IP |
 | `MCP_ENABLED` / `MCP_JWT_SECRET` | MCP surface |
 
-Install Redis session deps only if you enable Redis:
+## Session store (Memory default, Redis optional peer)
+
+**Default:** `express-session` **MemoryStore** — correct for single-process local and most single-node deploys. Sessions are lost on process restart and are **not** shared across replicas.
+
+**Multi-instance / HA:** Redis is an **optional peer dependency** (not installed with a normal `npm install`).
 
 ```bash
-npm install connect-redis redis
+# Install peers only when you need shared sessions
+npm install redis@^5 connect-redis@^9
+
+# Environment
+SESSION_STORE=redis
+REDIS_URL=redis://127.0.0.1:6379
+# optional: REDIS_SESSION_PREFIX=nt:sess:
 ```
+
+| If… | Then… |
+|-----|--------|
+| Peers not installed | Warning logged; **falls back to MemoryStore** |
+| `SESSION_STORE=redis` but no `REDIS_URL` | Warning; MemoryStore |
+| Redis unreachable at runtime | Client logs errors; session ops may fail until Redis is back |
+
+`redis` and `connect-redis` are declared under `peerDependencies` + `peerDependenciesMeta.optional` so npm does not require them for a default install.
 
 ## Session & auth policy
 
@@ -37,7 +56,7 @@ npm install connect-redis redis
 - **Logout** destroys the session cookie (`GET /logout`). JWT access tokens remain valid until expiry; treat JWT as short-lived and prefer session for browsers.
 - **CSRF** is required for session-authenticated mutating `/api/v1` and all `/admin` + HTML form POSTs.
 - **Idle timeout** is enforced server-side on session auth and mirrored in the customer SPA.
-- **Multi-instance:** use Redis (or another shared store) via `SESSION_STORE=redis`; MemoryStore is process-local only.
+- **Multi-instance:** install Redis peers + `SESSION_STORE=redis`, or use sticky sessions with MemoryStore (not recommended).
 
 ## Ticket locks (staff)
 
