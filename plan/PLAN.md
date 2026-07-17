@@ -529,7 +529,7 @@ Do **not** ship note UI before C-03 / A0.5 is green.
 - Login session regeneration; logout + bearer revocation policy documented  
 - Safe production errors; pin/vend frontend CDN deps (ygdrassil)  
 - Cron deployment docs (external scheduler → official cron endpoint)  
-- Browser matrix smoke  
+- Browser smoke (deferred; see §16.4)  
 
 ### 15.3 Backlog (explicitly deferred after U4 unless needed)
 
@@ -539,6 +539,7 @@ Do **not** ship note UI before C-03 / A0.5 is green.
 - Ticket locks **hard-block** mode (soft locks shipped)  
 - Windows `npm run` CLI flag stripping (root TODO)  
 - Full business-hours SLA engine edge cases  
+- **Browser E2E** (Playwright or equivalent) — deferred; when scheduled, ship **smoke first**, full matrix optional (see §16.4)  
 
 ### 15.4 Exit criteria
 
@@ -561,8 +562,24 @@ Do **not** ship note UI before C-03 / A0.5 is green.
 | DB graph | Assert rows after create/merge/cron | A1+ |
 | Differential | Same payload stock PHP vs Node | A2–A3 |
 | Authz matrix | Principals × resources × allow/deny | A0, expand A4 |
-| Browser | Playwright/Cypress critical paths | U0+ |
-| A11y | axe on key pages | U1, U3 |
+| Browser smoke | Playwright critical paths (Chromium) | Deferred |
+| Browser full matrix | + Firefox/WebKit, viewports, admin paths | Optional / on demand |
+| A11y | axe on key pages (can attach to smoke) | Deferred with browser |
+
+### 16.4 Browser E2E policy (decision — deferred implementation)
+
+**Decision (2026-07-17):** Prefer a **smoke suite as the default** when browser tests are added; keep **full coverage as an opt-in** path. Do not implement until explicitly scheduled.
+
+| Mode | Scope (when built) | When to run |
+|------|--------------------|-------------|
+| **Smoke (default)** | Chromium; customer paths: login → list → create → detail → reply; no console errors; optional axe on those pages | CI on PR / main (fast) |
+| **Full (optional)** | Smoke + Firefox + WebKit; desktop + narrow viewport; staff admin critical paths (queue, detail reply/note) | Nightly, manual, or `npm run test:browser:full` |
+
+Notes:
+
+- HTTP fixture tests remain the primary automated gate until browser smoke lands.  
+- Manual acceptance of FINDINGS.GROK §4.1 still useful before a first production pilot.  
+- Implementation sketch when unblocked: Playwright + fixture MySQL; scripts `test:browser` (smoke) and `test:browser:full`.
 
 ### 16.2 Fixture policy
 
@@ -577,6 +594,9 @@ Do **not** ship note UI before C-03 / A0.5 is green.
 npm test                  # unit
 npm run test:http         # fixture required
 npm run test:parity       # optional job with PHP container
+# later (deferred):
+# npm run test:browser      # smoke (default)
+# npm run test:browser:full # optional full matrix
 ```
 
 Add scripts as gates land; do not block A0 on full parity job.
@@ -715,6 +735,7 @@ This PLAN incorporates both: CODEX order, GROK product completeness after A4.
 | 2026-07-17 | **U4 admin FAQ + production readiness:** Admin FAQ list/search/create/edit/delete + categories; staff FAQ API lists drafts; errorHandler escapes HTML and hides internal messages in production; ygdrassil self-hosted under `public/vendor/ygdrassil` with CDN fallback; optional Redis session store; `docs/PRODUCTION.md`; README ops links; GitHub Actions unit CI. |
 | 2026-07-17 | **Soft ticket locks (stock semantics):** `lib/ticketLocks.js` — mode from `ticket_lock` (0/1/2) + `autolock_minutes`; acquire/renew/release on `lock` + `ticket.lock_id`; soft-touch on staff write paths (never blocks); admin banner; API `GET/POST .../lock` + release; cron `LockCleanup`; settings for mode/minutes. Policy: soft warn, on-first-edit (activity). Tests: `test/ticket.locks.test.js`. |
 | 2026-07-17 | **Redis sessions as optional peers:** `redis` + `connect-redis` in `peerDependencies` with `peerDependenciesMeta.optional`; MemoryStore remains default. `lib/sessionStore.js` loads peers only when `SESSION_STORE=redis` + `REDIS_URL`; clear fallback warnings. Docs in PRODUCTION.md / README. |
+| 2026-07-17 | **Browser E2E policy (deferred):** Smoke = default (Chromium critical customer paths; optional axe). Full matrix = optional (Firefox/WebKit, viewports, admin). No Playwright suite yet; HTTP fixture stays primary gate. |
 
 ---
 
