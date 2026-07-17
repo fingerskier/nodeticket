@@ -356,6 +356,84 @@ a:hover {
   white-space: pre-wrap;
 }
 
+/* Attachments (U2) */
+.attachments-section {
+  margin: 24px 0;
+  padding: 16px 0;
+  border-top: 1px solid var(--border-color);
+}
+
+.attachments-section h3 {
+  margin-bottom: 12px;
+  font-size: 1rem;
+}
+
+.attachment-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 12px;
+}
+
+.attachment-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.attachment-item:last-child {
+  border-bottom: none;
+}
+
+.attachment-link {
+  background: none;
+  border: none;
+  color: var(--primary-color);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+  text-decoration: underline;
+}
+
+.attachment-link:hover {
+  color: var(--primary-hover, #1d4ed8);
+}
+
+.attachment-link:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.attachment-meta {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.entry-attachments {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-color);
+}
+
+.empty-attachments {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.reply-section .form-group input[type="file"],
+.create-ticket .form-group input[type="file"] {
+  font-size: 0.9rem;
+}
+
+.alert-warning {
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+
 /* FAQ */
 .faq-list {
   display: grid;

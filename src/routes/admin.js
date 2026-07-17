@@ -127,6 +127,43 @@ function formatDate(date) {
   return new Date(date).toLocaleString();
 }
 
+function formatFileSize(n) {
+  const b = Number(n) || 0;
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  return `${(b / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/**
+ * Render attachment list for admin ticket detail (downloads via session-auth API).
+ * @param {string|number} ticketId
+ * @param {Array} attachments
+ * @param {number} [entryId] - if set, only show attachments for that thread entry
+ */
+function renderAdminAttachments(ticketId, attachments, entryId) {
+  let list = Array.isArray(attachments) ? attachments : [];
+  if (entryId != null) {
+    list = list.filter((a) => Number(a.entry_id) === Number(entryId));
+  }
+  if (!list.length) {
+    return entryId != null ? '' : '<p class="text-muted empty-attachments">No attachments.</p>';
+  }
+  return `
+    <ul class="attachment-list">
+      ${list.map((a) => `
+        <li class="attachment-item">
+          <a class="attachment-link"
+            href="/api/v1/tickets/${ticketId}/attachments/${a.file_id}"
+            download="${escapeHtml(a.name || 'download')}">
+            📎 ${escapeHtml(a.name || 'file')}
+          </a>
+          <span class="attachment-meta">${escapeHtml(a.mime_type || '')} · ${formatFileSize(a.size)}</span>
+        </li>
+      `).join('')}
+    </ul>
+  `;
+}
+
 /**
  * Dashboard
  */
@@ -572,6 +609,7 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
   const sessionUser = req.session.user;
   const { id } = req.params;
   const flash = req.query.msg ? `<div class="alert alert-success" role="status">${escapeHtml(req.query.msg)}</div>` : '';
+  const warnFlash = req.query.warn ? `<div class="alert alert-warning" role="status">${escapeHtml(req.query.warn)}</div>` : '';
   const errFlash = req.query.error ? `<div class="alert alert-danger" role="alert">${escapeHtml(req.query.error)}</div>` : '';
 
   try {
@@ -626,6 +664,14 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
       db.query(`SELECT canned_id, title, response FROM ${db.table('canned_response')} WHERE isenabled = 1 ORDER BY title`).catch(() => []),
     ]);
 
+    let attachments = [];
+    try {
+      const { getSdk } = require('../lib/sdk');
+      attachments = await getSdk().tickets.listAttachments(id);
+    } catch {
+      attachments = [];
+    }
+
     const csrf = base.csrfToken || '';
     const staffOpts = staffRows.map((s) =>
       `<option value="${s.staff_id}" ${s.staff_id === ticket.staff_id ? 'selected' : ''}>${escapeHtml(`${s.firstname || ''} ${s.lastname || ''}`.trim())}</option>`
@@ -643,7 +689,7 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
     const isClosed = ticket.status_state === 'closed';
 
     const content = `
-      ${flash}${errFlash}
+      ${flash}${warnFlash}${errFlash}
       <div class="ticket-detail">
         <div class="ticket-detail-header">
           <div>
@@ -711,6 +757,23 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
           </div>
         </div>
 
+        <div class="attachments-section">
+          <h3>Attachments</h3>
+          ${renderAdminAttachments(id, attachments)}
+          <form method="POST" action="/admin/tickets/${id}/attachments" class="ops-form attach-form" id="attach-form">
+            <input type="hidden" name="_csrf" value="${csrf}">
+            <input type="hidden" name="attachments_json" id="attach_json" value="">
+            <h4>Add files</h4>
+            <p class="text-muted">Attaches to the latest thread entry (max 5 × 5MB).</p>
+            <div class="form-group">
+              <label for="attach_files">Files</label>
+              <input type="file" id="attach_files" name="files" multiple
+                accept=".png,.jpg,.jpeg,.gif,.pdf,.txt,.doc,.docx,.zip,image/*,application/pdf">
+            </div>
+            <button type="submit" class="btn">Upload attachments</button>
+          </form>
+        </div>
+
         <div class="thread">
           <h3>Thread</h3>
           ${entries.length === 0 ? '<p class="empty-thread">No messages yet.</p>' : entries.map(e => `
@@ -722,6 +785,7 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
               </div>
               ${e.title ? `<div class="entry-title">${escapeHtml(e.title)}</div>` : ''}
               <div class="entry-body">${escapeHtml(e.body)}</div>
+              ${renderAdminAttachments(id, attachments, e.id)}
             </div>
           `).join('')}
         </div>
@@ -729,6 +793,7 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
         <div class="ticket-compose ops-grid">
           <form method="POST" action="/admin/tickets/${id}/reply" class="ops-form" id="reply-form">
             <input type="hidden" name="_csrf" value="${csrf}">
+            <input type="hidden" name="attachments_json" id="reply_attachments_json" value="">
             <h4>Public reply</h4>
             ${cannedRows.length ? `
               <div class="form-group">
@@ -742,6 +807,11 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
             <div class="form-group">
               <label for="reply_message">Message</label>
               <textarea id="reply_message" name="message" rows="5" required placeholder="Reply to the customer…"></textarea>
+            </div>
+            <div class="form-group">
+              <label for="reply_files">Attachments (optional, max 5 × 5MB)</label>
+              <input type="file" id="reply_files" name="files" multiple
+                accept=".png,.jpg,.jpeg,.gif,.pdf,.txt,.doc,.docx,.zip,image/*,application/pdf">
             </div>
             <button type="submit" class="btn btn-primary">Send reply</button>
           </form>
@@ -764,6 +834,30 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
       </div>
       <script>
         (function() {
+          const MAX_BYTES = 5 * 1024 * 1024;
+          const MAX_FILES = 5;
+
+          function readFilesAsAttachments(fileList) {
+            const files = Array.prototype.slice.call(fileList || [], 0, MAX_FILES);
+            return Promise.all(files.map(function(file) {
+              if (file.size > MAX_BYTES) {
+                return Promise.reject(new Error('File "' + file.name + '" exceeds 5MB limit'));
+              }
+              return new Promise(function(resolve, reject) {
+                const reader = new FileReader();
+                reader.onload = function() {
+                  resolve({
+                    name: file.name,
+                    type: file.type || 'application/octet-stream',
+                    data: reader.result
+                  });
+                };
+                reader.onerror = function() { reject(new Error('Failed to read ' + file.name)); };
+                reader.readAsDataURL(file);
+              });
+            }));
+          }
+
           const sel = document.getElementById('canned_reply');
           const ta = document.getElementById('reply_message');
           if (sel && ta) {
@@ -775,6 +869,54 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
                 ta.focus();
               }
               sel.selectedIndex = 0;
+            });
+          }
+
+          const replyForm = document.getElementById('reply-form');
+          const replyFiles = document.getElementById('reply_files');
+          const replyJson = document.getElementById('reply_attachments_json');
+          if (replyForm && replyFiles && replyJson) {
+            replyForm.addEventListener('submit', function(e) {
+              if (!replyFiles.files || !replyFiles.files.length) return;
+              if (replyForm.dataset.ready === '1') return;
+              e.preventDefault();
+              const btn = replyForm.querySelector('button[type="submit"]');
+              if (btn) { btn.disabled = true; btn.textContent = 'Preparing files…'; }
+              readFilesAsAttachments(replyFiles.files).then(function(atts) {
+                replyJson.value = JSON.stringify(atts);
+                replyForm.dataset.ready = '1';
+                replyForm.submit();
+              }).catch(function(err) {
+                alert(err.message || 'Could not read files');
+                if (btn) { btn.disabled = false; btn.textContent = 'Send reply'; }
+              });
+            });
+          }
+
+          const attachForm = document.getElementById('attach-form');
+          const attachFiles = document.getElementById('attach_files');
+          const attachJson = document.getElementById('attach_json');
+          if (attachForm && attachFiles && attachJson) {
+            attachForm.addEventListener('submit', function(e) {
+              e.preventDefault();
+              if (!attachFiles.files || !attachFiles.files.length) {
+                alert('Choose at least one file');
+                return;
+              }
+              if (attachForm.dataset.ready === '1') {
+                attachForm.submit();
+                return;
+              }
+              const btn = attachForm.querySelector('button[type="submit"]');
+              if (btn) { btn.disabled = true; btn.textContent = 'Uploading…'; }
+              readFilesAsAttachments(attachFiles.files).then(function(atts) {
+                attachJson.value = JSON.stringify(atts);
+                attachForm.dataset.ready = '1';
+                attachForm.submit();
+              }).catch(function(err) {
+                alert(err.message || 'Could not read files');
+                if (btn) { btn.disabled = false; btn.textContent = 'Upload attachments'; }
+              });
             });
           }
         })();
@@ -789,7 +931,21 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
 }));
 
 /**
- * Staff reply (public response)
+ * Parse attachments_json from staff forms (client FileReader → data URLs).
+ */
+function parseAttachmentsJson(raw) {
+  if (!raw || typeof raw !== 'string') return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.slice(0, 5).filter((a) => a && a.data && a.name);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Staff reply (public response) — optional attachments + notify feedback.
  */
 router.post('/tickets/:id/reply', asyncHandler(async (req, res) => {
   const id = req.params.id;
@@ -799,17 +955,29 @@ router.post('/tickets/:id/reply', asyncHandler(async (req, res) => {
 
   try {
     const { getSdk } = require('../lib/sdk');
+    const sdk = getSdk();
     const poster = user.name || user.username || 'Staff';
-    await getSdk().tickets.reply(id, {
+    const attachments = parseAttachmentsJson(req.body.attachments_json);
+
+    const entry = await sdk.tickets.reply(id, {
       staffId: user.id,
       body: message,
       poster,
       source: 'Web',
       format: 'text',
     });
-    // best-effort notify
+
+    if (attachments.length) {
+      await sdk.tickets.addAttachments(id, {
+        attachments,
+        entryId: entry.id,
+      });
+    }
+
+    // best-effort notify — surface failure without rolling back reply
+    let notification = null;
     try {
-      const conn = getSdk().connection;
+      const conn = sdk.connection;
       const owner = await conn.queryOne(
         `SELECT u.name, ue.address as email, t.number, tc.subject
          FROM ${conn.table('ticket')} t
@@ -819,20 +987,50 @@ router.post('/tickets/:id/reply', asyncHandler(async (req, res) => {
          WHERE t.ticket_id = ?`,
         [id]
       );
-      if (owner?.email) {
+      if (owner) {
         const { notifyTicketReply } = require('../lib/ticketNotifications');
-        await notifyTicketReply(conn, {
+        notification = await notifyTicketReply(conn, {
           ticket: { ticket_id: id, number: owner.number, subject: owner.subject },
           userEmail: owner.email,
           userName: owner.name,
           isStaffReply: true,
         });
       }
-    } catch { /* ignore notify errors */ }
-    res.redirect(`/admin/tickets/${id}?msg=${encodeURIComponent('Reply sent')}`);
+    } catch (err) {
+      notification = { sent: false, reason: err.message };
+    }
+
+    if (notification && notification.sent === false
+      && notification.reason !== 'no_email'
+      && notification.reason !== 'user_message') {
+      const reason = notification.reason ? `: ${notification.reason}` : '';
+      return res.redirect(`/admin/tickets/${id}?warn=${encodeURIComponent(`Reply saved; email notification failed${reason}`)}`);
+    }
+    const suffix = attachments.length ? ` (${attachments.length} file${attachments.length === 1 ? '' : 's'})` : '';
+    res.redirect(`/admin/tickets/${id}?msg=${encodeURIComponent(`Reply sent${suffix}`)}`);
   } catch (e) {
     console.error('Staff reply failed:', e);
     res.redirect(`/admin/tickets/${id}?error=${encodeURIComponent(e.message || 'Reply failed')}`);
+  }
+}));
+
+/**
+ * Staff upload attachments onto latest (or given) thread entry.
+ */
+router.post('/tickets/:id/attachments', asyncHandler(async (req, res) => {
+  const id = req.params.id;
+  const attachments = parseAttachmentsJson(req.body.attachments_json);
+  if (!attachments.length) {
+    return res.redirect(`/admin/tickets/${id}?error=${encodeURIComponent('No files to upload')}`);
+  }
+
+  try {
+    const { getSdk } = require('../lib/sdk');
+    await getSdk().tickets.addAttachments(id, { attachments });
+    res.redirect(`/admin/tickets/${id}?msg=${encodeURIComponent(`Uploaded ${attachments.length} file${attachments.length === 1 ? '' : 's'}`)}`);
+  } catch (e) {
+    console.error('Staff attachment upload failed:', e);
+    res.redirect(`/admin/tickets/${id}?error=${encodeURIComponent(e.message || 'Upload failed')}`);
   }
 }));
 

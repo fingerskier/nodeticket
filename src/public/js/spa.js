@@ -74,6 +74,113 @@ const api = {
   }
 };
 
+/**
+ * Convert FileList / File[] to API attachment payloads (RFC 2397 data URLs).
+ * @param {FileList|File[]} fileList
+ * @param {{ maxBytes?: number, maxFiles?: number }} [opts]
+ */
+async function filesToAttachments(fileList, opts = {}) {
+  const maxBytes = opts.maxBytes || 5 * 1024 * 1024;
+  const maxFiles = opts.maxFiles || 5;
+  const files = Array.from(fileList || []).slice(0, maxFiles);
+  const out = [];
+  for (const file of files) {
+    if (file.size > maxBytes) {
+      throw new Error(`File "${file.name}" exceeds ${Math.round(maxBytes / 1024 / 1024)}MB limit`);
+    }
+    // eslint-disable-next-line no-await-in-loop
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+      reader.readAsDataURL(file);
+    });
+    out.push({
+      name: file.name,
+      type: file.type || 'application/octet-stream',
+      data: dataUrl,
+    });
+  }
+  return out;
+}
+
+/** Download attachment via authenticated session fetch */
+async function downloadTicketAttachment(ticketId, fileId, name) {
+  const res = await fetch(`/api/v1/tickets/${ticketId}/attachments/${fileId}`, {
+    credentials: 'include',
+    headers: api.headers(),
+  });
+  if (!res.ok) {
+    throw new Error(`Download failed (${res.status})`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name || `file-${fileId}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function formatFileSize(n) {
+  const b = Number(n) || 0;
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  return `${(b / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function renderAttachmentsList(ticketId, attachments) {
+  if (!attachments?.length) {
+    return '<p class="text-muted empty-attachments">No attachments.</p>';
+  }
+  return `
+    <ul class="attachment-list">
+      ${attachments.map((a) => `
+        <li class="attachment-item">
+          <button type="button" class="attachment-link"
+            data-file-id="${a.file_id}"
+            data-file-name="${escapeHtml(a.name || 'download')}">
+            📎 ${escapeHtml(a.name || 'file')}
+          </button>
+          <span class="attachment-meta">${escapeHtml(a.mime_type || '')} · ${formatFileSize(a.size)}</span>
+        </li>
+      `).join('')}
+    </ul>
+  `;
+}
+
+function bindAttachmentDownloads(ticketId, root = document) {
+  root.querySelectorAll('.attachment-link[data-file-id]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const fileId = btn.getAttribute('data-file-id');
+      const name = btn.getAttribute('data-file-name') || 'download';
+      btn.disabled = true;
+      try {
+        await downloadTicketAttachment(ticketId, fileId, name);
+      } catch (err) {
+        alert(err.message || 'Download failed');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+function notificationBanner(notification) {
+  if (!notification) return '';
+  if (notification.sent) {
+    return '<div class="alert alert-success" role="status">Email notification sent.</div>';
+  }
+  if (notification.reason === 'user_message' || notification.reason === 'no_email') {
+    return '';
+  }
+  return `<div class="alert alert-warning" role="status">Saved, but email notification failed${
+    notification.reason ? `: ${escapeHtml(String(notification.reason))}` : ''
+  }.</div>`;
+}
+
 /** Safe query params from URL / state machine */
 function getAppQuery() {
   if (app && typeof app.getQuery === 'function') {
@@ -467,9 +574,10 @@ const views = {
     content.classList.remove('fade-in');
 
     try {
-      const [ticketRes, threadRes] = await Promise.all([
+      const [ticketRes, threadRes, attachRes] = await Promise.all([
         api.get(`/tickets/${ticketId}`),
-        api.get(`/tickets/${ticketId}/thread`)
+        api.get(`/tickets/${ticketId}/thread`),
+        api.get(`/tickets/${ticketId}/attachments`).catch(() => ({ success: false, data: [] })),
       ]);
 
       if (!ticketRes.success) {
@@ -485,7 +593,15 @@ const views = {
       }
 
       const t = ticketRes.data;
-      const entries = threadRes.data || [];
+      const entries = Array.isArray(threadRes.data) ? threadRes.data : [];
+      const attachments = Array.isArray(attachRes?.data) ? attachRes.data : [];
+      // Group attachments by entry_id for inline display
+      const byEntry = new Map();
+      for (const a of attachments) {
+        const key = a.entry_id || 0;
+        if (!byEntry.has(key)) byEntry.set(key, []);
+        byEntry.get(key).push(a);
+      }
 
       content.innerHTML = `
         <div class="ticket-detail slide-in">
@@ -530,6 +646,11 @@ const views = {
             </div>
           </div>
 
+          <div class="attachments-section">
+            <h3>Attachments</h3>
+            ${renderAttachmentsList(ticketId, attachments)}
+          </div>
+
           <div class="thread">
             <h3>Conversation</h3>
             ${entries.length === 0 ? '<p class="empty-thread">No messages yet.</p>' : entries.map(e => `
@@ -539,6 +660,11 @@ const views = {
                   <span class="entry-date">${formatDate(e.created)}</span>
                 </div>
                 <div class="entry-body">${escapeHtml(e.body)}</div>
+                ${byEntry.has(e.id) ? `
+                  <div class="entry-attachments">
+                    ${renderAttachmentsList(ticketId, byEntry.get(e.id))}
+                  </div>
+                ` : ''}
               </div>
             `).join('')}
           </div>
@@ -550,7 +676,13 @@ const views = {
               <div class="form-group">
                 <textarea id="replyMessage" name="message" required rows="4" placeholder="Type your reply..."></textarea>
               </div>
-              <div class="form-error" id="replyError"></div>
+              <div class="form-group">
+                <label for="replyFiles">Attachments (optional, max 5 × 5MB)</label>
+                <input type="file" id="replyFiles" name="files" multiple
+                  accept=".png,.jpg,.jpeg,.gif,.pdf,.txt,.doc,.docx,.zip,image/*,application/pdf">
+              </div>
+              <div class="form-error" id="replyError" aria-live="polite"></div>
+              <div id="replyNotice"></div>
               <button type="submit" class="btn btn-primary">Send Reply</button>
             </form>
           </div>
@@ -567,6 +699,8 @@ const views = {
         </div>
       `;
 
+      bindAttachmentDownloads(ticketId, content);
+
       // Bind reply form
       const replyForm = document.getElementById('replyForm');
       if (replyForm) {
@@ -574,21 +708,37 @@ const views = {
           e.preventDefault();
           const msgEl = document.getElementById('replyMessage');
           const errorDiv = document.getElementById('replyError');
+          const noticeDiv = document.getElementById('replyNotice');
+          const fileInput = document.getElementById('replyFiles');
           const submitBtn = replyForm.querySelector('button[type="submit"]');
 
           submitBtn.disabled = true;
           submitBtn.textContent = 'Sending...';
           errorDiv.textContent = '';
+          if (noticeDiv) noticeDiv.innerHTML = '';
 
           try {
-            const res = await api.post(`/tickets/${ticketId}/reply`, { message: msgEl.value });
+            let attachments = [];
+            if (fileInput?.files?.length) {
+              attachments = await filesToAttachments(fileInput.files);
+            }
+            const payload = { message: msgEl.value };
+            if (attachments.length) payload.attachments = attachments;
+            const res = await api.post(`/tickets/${ticketId}/reply`, payload);
             if (res.success) {
-              app.gotoState('ticket', { id: ticketId });
+              if (res.notification && res.notification.sent === false
+                && res.notification.reason !== 'user_message'
+                && res.notification.reason !== 'no_email') {
+                if (noticeDiv) noticeDiv.innerHTML = notificationBanner(res.notification);
+                setTimeout(() => app.gotoState('ticket', { id: ticketId }), 1200);
+              } else {
+                app.gotoState('ticket', { id: ticketId });
+              }
             } else {
               errorDiv.textContent = res.message || 'Failed to send reply.';
             }
           } catch (err) {
-            errorDiv.textContent = 'Connection error. Please try again.';
+            errorDiv.textContent = err.message || 'Connection error. Please try again.';
           } finally {
             submitBtn.disabled = false;
             submitBtn.textContent = 'Send Reply';
@@ -683,7 +833,14 @@ const views = {
             <textarea id="message" name="message" required rows="8" placeholder="Please describe your issue in detail..."></textarea>
           </div>
 
-          <div class="form-error" id="createError"></div>
+          <div class="form-group">
+            <label for="createFiles">Attachments (optional, max 5 × 5MB)</label>
+            <input type="file" id="createFiles" name="files" multiple
+              accept=".png,.jpg,.jpeg,.gif,.pdf,.txt,.doc,.docx,.zip,image/*,application/pdf">
+          </div>
+
+          <div class="form-error" id="createError" aria-live="polite"></div>
+          <div id="createNotice"></div>
 
           <div class="form-actions">
             <button type="button" class="btn" data-state="tickets">Cancel</button>
@@ -900,31 +1057,42 @@ async function handleCreateTicket(e) {
 
   const form = e.target;
   const errorDiv = document.getElementById('createError');
+  const noticeDiv = document.getElementById('createNotice');
   const submitBtn = form.querySelector('button[type="submit"]');
+  const fileInput = document.getElementById('createFiles');
 
   submitBtn.disabled = true;
   submitBtn.textContent = 'Creating...';
-  errorDiv.textContent = '';
+  if (errorDiv) errorDiv.textContent = '';
+  if (noticeDiv) noticeDiv.innerHTML = '';
 
   const formData = new FormData(form);
   const data = {
     topic_id: parseInt(formData.get('topic_id'), 10),
     subject: formData.get('subject'),
-    message: formData.get('message')
+    message: formData.get('message'),
   };
 
   try {
+    if (fileInput?.files?.length) {
+      data.attachments = await filesToAttachments(fileInput.files);
+    }
     const res = await api.post('/tickets', data);
 
     if (res.success) {
-      // Show success and redirect to ticket
-      app.gotoState('ticket', { id: res.data.ticket_id });
+      if (res.notification && res.notification.sent === false
+        && res.notification.reason !== 'no_email') {
+        if (noticeDiv) noticeDiv.innerHTML = notificationBanner(res.notification);
+        setTimeout(() => app.gotoState('ticket', { id: res.data.ticket_id }), 1200);
+      } else {
+        app.gotoState('ticket', { id: res.data.ticket_id });
+      }
     } else {
-      errorDiv.textContent = res.message || 'Failed to create ticket. Please try again.';
+      if (errorDiv) errorDiv.textContent = res.message || 'Failed to create ticket. Please try again.';
     }
-  } catch (e) {
-    console.error('Create ticket error:', e);
-    errorDiv.textContent = 'Connection error. Please try again.';
+  } catch (err) {
+    console.error('Create ticket error:', err);
+    if (errorDiv) errorDiv.textContent = err.message || 'Connection error. Please try again.';
   } finally {
     submitBtn.disabled = false;
     submitBtn.textContent = 'Create Ticket';

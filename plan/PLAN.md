@@ -475,8 +475,10 @@ Do **not** ship note UI before C-03 / A0.5 is green.
 
 ### 13.2 Exit criteria
 
-- [ ] End-to-end attach on create and reply in fixture  
-- [ ] Unauthorized download denied  
+- [x] Customer SPA: attach on create/reply; list + download on ticket detail; notify failure banner  
+- [x] Staff admin: attach list/download on detail; reply + standalone upload; notify failure flash  
+- [ ] End-to-end attach on create and reply in fixture (manual / HTTP suite expansion)  
+- [ ] Unauthorized download denied (covered by API `canAccessTicket`; add fixture assert when convenient)  
 
 ---
 
@@ -699,6 +701,7 @@ This PLAN incorporates both: CODEX order, GROK product completeness after A4.
 | 2026-07-16 | **A4 native product API landed (partial):** PG fail-fast; staff create-on-behalf (`user_id`); attachment list/download/upload + reply attachments; ticket create/reply notification hooks (templates+SES/mock); tasks create/update/close; FAQ staff CRUD; `docs/API-A4.md`. Tests: `test/a4.product-api.test.js` (97 total). Remaining A4: full OpenAPI regen, custom form schema endpoint, merge polish, MCP authz audit, login/CSRF deep triage (deferred). |
 | 2026-07-16 | **U0/U1 staff ops UI:** Admin ticket queue (search, status, dept, assignee, unassigned fix, filter-preserving pagination, staff visibility scope); ticket detail ops (reply + canned, internal note, assign/team/dept, close/reopen); SPA ticket list pagination + status filter + keyboard row open. Login triage still deferred. |
 | 2026-07-17 | **MySQL fixture + HTTP integration green:** Docker compose MySQL:8 on :3307; `scripts/fixture-bootstrap.js` applies `docs/mysql.sql` + seed (admin/customer/API key); `npm run test:http` — 12/12 pass (login, create/reply/close/reopen, note privacy, tickets.json/xml, cron Completed, purpose JWT isolation). Schema fixes: backtick `mid`, list.configuration no TEXT default. App exports `{ app, start }` for tests. |
+| 2026-07-17 | **U2 attachments + notify UI:** Customer SPA file upload on create/reply (RFC2397 data URLs), attachment list + authenticated download, notification failure banners. Staff admin ticket detail: attachment panel, per-entry links, reply attachments, standalone upload form, warn flash when email notify fails (write not rolled back). CSS in `styles.css` / `admin.css`. |
 
 ---
 
