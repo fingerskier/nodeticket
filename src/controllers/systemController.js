@@ -53,14 +53,15 @@ const runCron = async (req, res) => {
     throw ApiError.forbidden('Administrator access or cron-capable API key required');
   }
 
-  // Placeholder for cron execution
-  const tasks = [
-    { name: 'MailFetcher', status: 'skipped', message: 'Not implemented' },
-    { name: 'TicketMonitor', status: 'skipped', message: 'Not implemented' },
-    { name: 'CleanExpiredSessions', status: 'skipped', message: 'Not implemented' },
-  ];
+  const { runAllCronJobs } = require('../lib/cron');
+  const { tasks, elapsedMs } = await runAllCronJobs(getSdk().connection);
 
-  res.json({ success: true, message: 'Cron execution completed', tasks });
+  res.json({
+    success: true,
+    message: 'Cron execution completed',
+    tasks,
+    elapsedMs,
+  });
 };
 
 module.exports = {

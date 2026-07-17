@@ -285,19 +285,21 @@ const {
   parseLegacyCreateBody,
   formatLegacyCreateError,
 } = require('../lib/legacyTicketApi');
+const { parseTicketXml } = require('../lib/legacyTicketXml');
+const { parseTicketEmail } = require('../lib/legacyTicketEmail');
 
 /**
- * Official osTicket FOSS create — POST /api/tickets.json
- *
- * Auth: X-API-Key with can_create_tickets (middleware). Never elevates to staff.
- * Success: HTTP 201, text/plain body = ticket number only (stock contract).
+ * Stock-compatible plain-text error for official API routes.
  */
-const createLegacy = async (req, res) => {
-  const parsed = parseLegacyCreateBody(req.body || {}, { ip: req.ip });
-  if (!parsed.ok) {
-    return legacyError(res, parsed.status, parsed.message);
-  }
+function legacyError(res, status, message) {
+  return res.status(status).type('text/plain').send(message);
+}
 
+/**
+ * Shared official create kernel from a validated legacy payload.
+ * @returns {Promise<{ number: string, ticket_id: number, entry_id?: number }>}
+ */
+async function createFromLegacyData(fields) {
   const {
     email,
     name,
@@ -313,117 +315,297 @@ const createLegacy = async (req, res) => {
     duedate,
     priorityId,
     attachments,
-  } = parsed.data;
+  } = fields;
 
   const sdk = getSdk();
   const conn = sdk.connection;
 
-  try {
-    // Find or create user by email
-    let user = await conn.queryOne(
-      `SELECT u.id, u.name, u.default_email_id, ue.address as email
-       FROM ${conn.table('user_email')} ue
-       JOIN ${conn.table('user')} u ON u.id = ue.user_id
-       WHERE ue.address = ?`,
-      [email]
+  let user = await conn.queryOne(
+    `SELECT u.id, u.name, u.default_email_id, ue.address as email
+     FROM ${conn.table('user_email')} ue
+     JOIN ${conn.table('user')} u ON u.id = ue.user_id
+     WHERE ue.address = ?`,
+    [email]
+  );
+
+  if (!user) {
+    user = await sdk.users.create({ name, email });
+  }
+
+  const ticketData = {
+    subject,
+    body: message,
+    email,
+    name,
+    phone,
+    notes,
+    dept_id: 0,
+    topic_id: topicId || 0,
+    priority_id: priorityId || 0,
+    source,
+  };
+
+  if (topicId) {
+    const topic = await conn.queryOne(
+      `SELECT topic_id, dept_id, priority_id, sla_id FROM ${conn.table('help_topic')} WHERE topic_id = ?`,
+      [topicId]
     );
-
-    if (!user) {
-      user = await sdk.users.create({ name, email });
+    if (topic) {
+      ticketData.dept_id = topic.dept_id || 0;
+      ticketData.priority_id = priorityId || topic.priority_id || 0;
     }
+  }
 
-    const ticketData = {
-      subject,
-      body: message,
-      email,
-      name,
-      phone,
-      notes,
-      dept_id: 0,
-      topic_id: topicId || 0,
-      priority_id: priorityId || 0,
-      source,
-    };
+  const filterResult = await applyFilters(ticketData);
+  if (filterResult?._rejected) {
+    const err = ApiError.forbidden(filterResult._rejectMessage || 'Rejected by filter');
+    err.status = 403;
+    throw err;
+  }
 
-    if (topicId) {
-      const topic = await conn.queryOne(
-        `SELECT topic_id, dept_id, priority_id, sla_id FROM ${conn.table('help_topic')} WHERE topic_id = ?`,
-        [topicId]
-      );
-      if (topic) {
-        ticketData.dept_id = topic.dept_id || 0;
-        ticketData.priority_id = priorityId || topic.priority_id || 0;
-      }
+  const allowedFilterCols = {
+    dept_id: 'deptId',
+    topic_id: 'topicId',
+    sla_id: 'slaId',
+    staff_id: 'staffId',
+    team_id: 'teamId',
+    status_id: 'statusId',
+  };
+  const overrides = {};
+  for (const [col, key] of Object.entries(allowedFilterCols)) {
+    if (filterResult && filterResult[col] != null) {
+      overrides[key] = filterResult[col];
     }
+  }
 
-    const filterResult = await applyFilters(ticketData);
-    if (filterResult?._rejected) {
-      return legacyError(
-        res,
-        403,
-        formatLegacyCreateError(filterResult._rejectMessage || 'Rejected by filter')
-      );
-    }
+  if (staffId != null && overrides.staffId == null) overrides.staffId = staffId;
+  if (slaId != null && overrides.slaId == null) overrides.slaId = slaId;
+  if (duedate != null && overrides.duedate == null) overrides.duedate = duedate;
+  if (topicId != null && overrides.topicId == null) overrides.topicId = topicId;
 
-    const allowedFilterCols = {
-      dept_id: 'deptId',
-      topic_id: 'topicId',
-      sla_id: 'slaId',
-      staff_id: 'staffId',
-      team_id: 'teamId',
-      status_id: 'statusId',
-    };
-    const overrides = {};
-    for (const [col, key] of Object.entries(allowedFilterCols)) {
-      if (filterResult && filterResult[col] != null) {
-        overrides[key] = filterResult[col];
-      }
-    }
+  return sdk.tickets.create({
+    userId: user.id,
+    topicId: overrides.topicId != null ? overrides.topicId : topicId,
+    subject,
+    body: message,
+    source,
+    ipAddress: ip,
+    poster: name,
+    allowPrivateTopic: true,
+    deptId: overrides.deptId,
+    staffId: overrides.staffId,
+    teamId: overrides.teamId,
+    slaId: overrides.slaId,
+    statusId: overrides.statusId,
+    duedate: overrides.duedate,
+    attachments: attachments || [],
+  });
+}
 
-    if (staffId != null && overrides.staffId == null) overrides.staffId = staffId;
-    if (slaId != null && overrides.slaId == null) overrides.slaId = slaId;
-    if (duedate != null && overrides.duedate == null) overrides.duedate = duedate;
-    if (topicId != null && overrides.topicId == null) overrides.topicId = topicId;
+function handleLegacyCreateError(res, err) {
+  if (err instanceof ApiError) {
+    return legacyError(res, err.status || 400, formatLegacyCreateError(err.message));
+  }
+  const { ValidationError, ConflictError } = require('../sdk/errors');
+  if (err instanceof ValidationError || err instanceof ConflictError) {
+    return legacyError(res, 400, formatLegacyCreateError(err.message));
+  }
+  console.error('legacy create error:', err);
+  return legacyError(res, 500, formatLegacyCreateError(err.message || 'unknown error'));
+}
 
-    const data = await sdk.tickets.create({
-      userId: user.id,
-      topicId: overrides.topicId != null ? overrides.topicId : topicId,
-      subject,
-      body: message,
-      source,
-      ipAddress: ip,
-      poster: name,
-      allowPrivateTopic: true,
-      deptId: overrides.deptId,
-      staffId: overrides.staffId,
-      teamId: overrides.teamId,
-      slaId: overrides.slaId,
-      statusId: overrides.statusId,
-      duedate: overrides.duedate,
-      attachments,
-    });
+/**
+ * Official osTicket FOSS create — POST /api/tickets.json
+ */
+const createLegacy = async (req, res) => {
+  const parsed = parseLegacyCreateBody(req.body || {}, { ip: req.ip });
+  if (!parsed.ok) {
+    return legacyError(res, parsed.status, parsed.message);
+  }
 
-    // Stock: HTTP 201 + bare ticket number as response body
+  try {
+    const data = await createFromLegacyData(parsed.data);
     res.status(201).type('text/plain').send(String(data.number));
   } catch (err) {
-    if (err instanceof ApiError) {
-      return legacyError(res, err.status || 400, formatLegacyCreateError(err.message));
-    }
-    const { ValidationError, ConflictError } = require('../sdk/errors');
-    if (err instanceof ValidationError || err instanceof ConflictError) {
-      return legacyError(res, 400, formatLegacyCreateError(err.message));
-    }
-    console.error('createLegacy error:', err);
-    return legacyError(res, 500, formatLegacyCreateError(err.message || 'unknown error'));
+    return handleLegacyCreateError(res, err);
   }
 };
 
 /**
- * Stock-compatible plain-text error for official API routes.
+ * Official create — POST /api/tickets.xml
+ * Body is raw XML (express.text).
  */
-function legacyError(res, status, message) {
-  return res.status(status).type('text/plain').send(message);
+const createLegacyXml = async (req, res) => {
+  const raw = typeof req.body === 'string' ? req.body : '';
+  const xmlResult = parseTicketXml(raw);
+  if (!xmlResult.ok) {
+    return legacyError(res, 400, xmlResult.message || 'Invalid XML');
+  }
+
+  const parsed = parseLegacyCreateBody(xmlResult.data, { ip: req.ip });
+  if (!parsed.ok) {
+    return legacyError(res, parsed.status, parsed.message);
+  }
+
+  try {
+    const data = await createFromLegacyData(parsed.data);
+    res.status(201).type('text/plain').send(String(data.number));
+  } catch (err) {
+    return handleLegacyCreateError(res, err);
+  }
+};
+
+/**
+ * Record Message-ID on a thread entry for dedup / reply threading.
+ */
+async function recordEmailHeaders(conn, entryId, mid, headersText) {
+  if (!entryId || !mid) return;
+  try {
+    await conn.query(
+      `INSERT INTO ${conn.table('thread_entry_email')}
+        (thread_entry_id, email_id, mid, headers)
+       VALUES (?, NULL, ?, ?)`,
+      [entryId, mid, headersText || null]
+    );
+  } catch (err) {
+    // Non-fatal if table missing or duplicate mid unique index
+    console.warn('thread_entry_email insert skipped:', err.message);
+  }
 }
+
+/**
+ * Official create/reply — POST /api/tickets.email
+ * Body is raw MIME (express.text / raw).
+ */
+const createLegacyEmail = async (req, res) => {
+  const raw = typeof req.body === 'string'
+    ? req.body
+    : (Buffer.isBuffer(req.body) ? req.body.toString('utf8') : '');
+
+  const emailResult = parseTicketEmail(raw);
+  if (!emailResult.ok) {
+    return legacyError(res, 400, emailResult.message || 'Unable to read email request');
+  }
+
+  const mail = emailResult.data;
+  const sdk = getSdk();
+  const conn = sdk.connection;
+
+  try {
+    // Dedup by Message-ID
+    if (mail.mid) {
+      const seen = await conn.queryOne(
+        `SELECT tee.mid, te.id as entry_id, th.object_id as ticket_id, t.number
+         FROM ${conn.table('thread_entry_email')} tee
+         JOIN ${conn.table('thread_entry')} te ON te.id = tee.thread_entry_id
+         JOIN ${conn.table('thread')} th ON th.id = te.thread_id AND th.object_type = 'T'
+         JOIN ${conn.table('ticket')} t ON t.ticket_id = th.object_id
+         WHERE tee.mid = ?
+         LIMIT 1`,
+        [mail.mid]
+      );
+      if (seen?.number) {
+        // Already processed — return existing ticket number (stock silent success path)
+        return res.status(201).type('text/plain').send(String(seen.number));
+      }
+    }
+
+    // Reply threading: In-Reply-To / References → existing thread
+    const threadRefs = [mail.inReplyTo, ...(mail.references || [])].filter(Boolean);
+    let replyTicket = null;
+    for (const ref of threadRefs) {
+      const hit = await conn.queryOne(
+        `SELECT th.object_id as ticket_id, t.number, t.user_id
+         FROM ${conn.table('thread_entry_email')} tee
+         JOIN ${conn.table('thread_entry')} te ON te.id = tee.thread_entry_id
+         JOIN ${conn.table('thread')} th ON th.id = te.thread_id AND th.object_type = 'T'
+         JOIN ${conn.table('ticket')} t ON t.ticket_id = th.object_id
+         WHERE tee.mid = ?
+         LIMIT 1`,
+        [ref]
+      );
+      if (hit) {
+        replyTicket = hit;
+        break;
+      }
+    }
+
+    // Subject ticket number fallback
+    if (!replyTicket && mail.ticketNumber) {
+      const byNum = await conn.queryOne(
+        `SELECT ticket_id, number, user_id FROM ${conn.table('ticket')} WHERE number = ? LIMIT 1`,
+        [mail.ticketNumber]
+      );
+      if (byNum) replyTicket = byNum;
+    }
+
+    if (replyTicket) {
+      let user = null;
+      if (mail.email) {
+        user = await conn.queryOne(
+          `SELECT u.id FROM ${conn.table('user_email')} ue
+           JOIN ${conn.table('user')} u ON u.id = ue.user_id
+           WHERE ue.address = ?`,
+          [mail.email]
+        );
+      }
+      const reply = await sdk.tickets.reply(replyTicket.ticket_id || replyTicket.ticket_id, {
+        userId: user?.id || replyTicket.user_id || null,
+        body: mail.message,
+        poster: mail.name || mail.email || 'Email User',
+        source: 'Email',
+        format: 'text',
+      });
+
+      await recordEmailHeaders(
+        conn,
+        reply.id,
+        mail.mid,
+        raw.slice(0, 4000)
+      );
+
+      return res.status(201).type('text/plain').send(String(replyTicket.number));
+    }
+
+    // New ticket from email
+    const parsed = parseLegacyCreateBody(
+      {
+        email: mail.email,
+        name: mail.name,
+        subject: mail.subject,
+        message: mail.message,
+        source: 'Email',
+        attachments: mail.attachments,
+      },
+      { ip: req.ip }
+    );
+    if (!parsed.ok) {
+      return legacyError(res, parsed.status, parsed.message);
+    }
+
+    const data = await createFromLegacyData(parsed.data);
+    await recordEmailHeaders(conn, data.entry_id, mail.mid, raw.slice(0, 4000));
+    res.status(201).type('text/plain').send(String(data.number));
+  } catch (err) {
+    return handleLegacyCreateError(res, err);
+  }
+};
+
+/**
+ * Official cron — POST /api/tasks/cron
+ * Auth: can_exec_cron. Success: HTTP 200 body "Completed"
+ */
+const runLegacyCron = async (req, res) => {
+  try {
+    const { runAllCronJobs } = require('../lib/cron');
+    const sdk = getSdk();
+    await runAllCronJobs(sdk.connection);
+    res.status(200).type('text/plain').send('Completed');
+  } catch (err) {
+    console.error('legacy cron error:', err);
+    res.status(500).type('text/plain').send(err.message || 'Cron failed');
+  }
+};
 
 /**
  * Bulk action on tickets (admin): assign, close, delete. Max 100 tickets per call.
@@ -529,5 +711,8 @@ module.exports = {
   addNote,
   merge,
   createLegacy,
+  createLegacyXml,
+  createLegacyEmail,
+  runLegacyCron,
   bulkAction,
 };

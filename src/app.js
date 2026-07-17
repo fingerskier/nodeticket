@@ -145,15 +145,39 @@ app.use('/api/v1/canned-responses', cannedResponseRoutes);
 app.use('/api/v1/filters', filterRoutes);
 app.use('/api/v1', systemRoutes);
 
-// Legacy interoperability — official osTicket create (API-key + can_create_tickets only)
+// Legacy interoperability — official osTicket FOSS HTTP API
 const { asyncHandler } = require('./middleware/errorHandler');
 const { requireApiKeyCapability } = require('./middleware/auth');
 const ticketController = require('./controllers/ticketController');
+
+// Raw text bodies for XML / MIME (global json parser only handles application/json)
+const rawText10mb = express.text({ type: () => true, limit: '10mb' });
+
 app.post(
   '/api/tickets.json',
   apiLimiter,
   requireApiKeyCapability('can_create_tickets', { plainText: true }),
   asyncHandler(ticketController.createLegacy)
+);
+app.post(
+  '/api/tickets.xml',
+  apiLimiter,
+  rawText10mb,
+  requireApiKeyCapability('can_create_tickets', { plainText: true }),
+  asyncHandler(ticketController.createLegacyXml)
+);
+app.post(
+  '/api/tickets.email',
+  apiLimiter,
+  rawText10mb,
+  requireApiKeyCapability('can_create_tickets', { plainText: true }),
+  asyncHandler(ticketController.createLegacyEmail)
+);
+app.post(
+  '/api/tasks/cron',
+  apiLimiter,
+  requireApiKeyCapability('can_exec_cron', { plainText: true }),
+  asyncHandler(ticketController.runLegacyCron)
 );
 
 // HTML routes (CSRF protection applied to both admin and public)
