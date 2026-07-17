@@ -145,12 +145,14 @@ app.use('/api/v1/canned-responses', cannedResponseRoutes);
 app.use('/api/v1/filters', filterRoutes);
 app.use('/api/v1', systemRoutes);
 
-// Legacy interoperability — only official create path (not full native router)
+// Legacy interoperability — official osTicket create (API-key + can_create_tickets only)
 const { asyncHandler } = require('./middleware/errorHandler');
+const { requireApiKeyCapability } = require('./middleware/auth');
 const ticketController = require('./controllers/ticketController');
 app.post(
   '/api/tickets.json',
   apiLimiter,
+  requireApiKeyCapability('can_create_tickets', { plainText: true }),
   asyncHandler(ticketController.createLegacy)
 );
 

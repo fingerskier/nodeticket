@@ -281,12 +281,149 @@ const merge = async (req, res) => {
   res.json({ success: true, message: 'Tickets merged', data });
 };
 
+const {
+  parseLegacyCreateBody,
+  formatLegacyCreateError,
+} = require('../lib/legacyTicketApi');
+
 /**
- * Create ticket - legacy interoperability format
+ * Official osTicket FOSS create — POST /api/tickets.json
+ *
+ * Auth: X-API-Key with can_create_tickets (middleware). Never elevates to staff.
+ * Success: HTTP 201, text/plain body = ticket number only (stock contract).
  */
 const createLegacy = async (req, res) => {
-  throw ApiError.badRequest('Write operations not yet implemented');
+  const parsed = parseLegacyCreateBody(req.body || {}, { ip: req.ip });
+  if (!parsed.ok) {
+    return legacyError(res, parsed.status, parsed.message);
+  }
+
+  const {
+    email,
+    name,
+    subject,
+    message,
+    topicId,
+    source,
+    ip,
+    phone,
+    notes,
+    staffId,
+    slaId,
+    duedate,
+    priorityId,
+    attachments,
+  } = parsed.data;
+
+  const sdk = getSdk();
+  const conn = sdk.connection;
+
+  try {
+    // Find or create user by email
+    let user = await conn.queryOne(
+      `SELECT u.id, u.name, u.default_email_id, ue.address as email
+       FROM ${conn.table('user_email')} ue
+       JOIN ${conn.table('user')} u ON u.id = ue.user_id
+       WHERE ue.address = ?`,
+      [email]
+    );
+
+    if (!user) {
+      user = await sdk.users.create({ name, email });
+    }
+
+    const ticketData = {
+      subject,
+      body: message,
+      email,
+      name,
+      phone,
+      notes,
+      dept_id: 0,
+      topic_id: topicId || 0,
+      priority_id: priorityId || 0,
+      source,
+    };
+
+    if (topicId) {
+      const topic = await conn.queryOne(
+        `SELECT topic_id, dept_id, priority_id, sla_id FROM ${conn.table('help_topic')} WHERE topic_id = ?`,
+        [topicId]
+      );
+      if (topic) {
+        ticketData.dept_id = topic.dept_id || 0;
+        ticketData.priority_id = priorityId || topic.priority_id || 0;
+      }
+    }
+
+    const filterResult = await applyFilters(ticketData);
+    if (filterResult?._rejected) {
+      return legacyError(
+        res,
+        403,
+        formatLegacyCreateError(filterResult._rejectMessage || 'Rejected by filter')
+      );
+    }
+
+    const allowedFilterCols = {
+      dept_id: 'deptId',
+      topic_id: 'topicId',
+      sla_id: 'slaId',
+      staff_id: 'staffId',
+      team_id: 'teamId',
+      status_id: 'statusId',
+    };
+    const overrides = {};
+    for (const [col, key] of Object.entries(allowedFilterCols)) {
+      if (filterResult && filterResult[col] != null) {
+        overrides[key] = filterResult[col];
+      }
+    }
+
+    if (staffId != null && overrides.staffId == null) overrides.staffId = staffId;
+    if (slaId != null && overrides.slaId == null) overrides.slaId = slaId;
+    if (duedate != null && overrides.duedate == null) overrides.duedate = duedate;
+    if (topicId != null && overrides.topicId == null) overrides.topicId = topicId;
+
+    const data = await sdk.tickets.create({
+      userId: user.id,
+      topicId: overrides.topicId != null ? overrides.topicId : topicId,
+      subject,
+      body: message,
+      source,
+      ipAddress: ip,
+      poster: name,
+      allowPrivateTopic: true,
+      deptId: overrides.deptId,
+      staffId: overrides.staffId,
+      teamId: overrides.teamId,
+      slaId: overrides.slaId,
+      statusId: overrides.statusId,
+      duedate: overrides.duedate,
+      attachments,
+    });
+
+    // Stock: HTTP 201 + bare ticket number as response body
+    res.status(201).type('text/plain').send(String(data.number));
+  } catch (err) {
+    if (err instanceof ApiError) {
+      return legacyError(res, err.status || 400, formatLegacyCreateError(err.message));
+    }
+    const { ValidationError, ConflictError } = require('../sdk/errors');
+    if (err instanceof ValidationError || err instanceof ConflictError) {
+      return legacyError(res, 400, formatLegacyCreateError(err.message));
+    }
+    console.error('createLegacy error:', err);
+    return legacyError(res, 500, formatLegacyCreateError(err.message || 'unknown error'));
+  }
 };
+
+/**
+ * Stock-compatible plain-text error for official API routes.
+ */
+function legacyError(res, status, message) {
+  return res.status(status).type('text/plain').send(message);
+}
 
 /**
  * Bulk action on tickets (admin): assign, close, delete. Max 100 tickets per call.

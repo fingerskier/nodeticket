@@ -589,12 +589,20 @@ module.exports = (conn, data) => {
    *
    * @param {Object} params
    * @param {number|string} params.userId
-   * @param {number|string} params.topicId
+   * @param {number|string} [params.topicId] - Optional; 0 if omitted
    * @param {string} params.subject
    * @param {string} params.body
    * @param {string} [params.source='API']
    * @param {string} [params.ipAddress='']
    * @param {string} [params.poster]
+   * @param {boolean} [params.allowPrivateTopic=false] - API path may use private topics
+   * @param {number} [params.deptId] - Override department
+   * @param {number} [params.staffId] - Override assignee
+   * @param {number} [params.teamId] - Override team
+   * @param {number} [params.slaId] - Override SLA
+   * @param {number} [params.statusId] - Override status
+   * @param {Date|string|null} [params.duedate] - Override due date
+   * @param {Array} [params.attachments] - Optional files to attach to first entry
    * @returns {Promise<Object>}
    */
   const create = async ({
@@ -605,27 +613,53 @@ module.exports = (conn, data) => {
     source = 'API',
     ipAddress = '',
     poster,
+    allowPrivateTopic = false,
+    deptId: deptIdOverride,
+    staffId: staffIdOverride,
+    teamId: teamIdOverride,
+    slaId: slaIdOverride,
+    statusId: statusIdOverride,
+    duedate: duedateOverride,
+    attachments = [],
   }) => {
     if (!userId) throw new ValidationError('userId is required');
-    if (!topicId) throw new ValidationError('topicId is required');
     if (!subject || !subject.trim()) throw new ValidationError('Subject is required');
     if (!body || !body.trim()) throw new ValidationError('Message body is required');
 
-    // Active + public topic (flags bit0 = active in this codebase / osTicket)
-    const topic = await conn.queryOne(`
-      SELECT ht.*, d.id as dept_join_id, d.name as dept_name
-      FROM ${conn.table('help_topic')} ht
-      LEFT JOIN ${conn.table('department')} d ON ht.dept_id = d.id
-      WHERE ht.topic_id = ? AND ht.ispublic = 1
-        AND (ht.flags & 1) = 1
-    `, [topicId]);
+    const resolvedTopicId = topicId != null && topicId !== '' ? parseInt(topicId, 10) : 0;
 
-    if (!topic) {
-      throw new ValidationError('Invalid or inactive help topic');
+    let topic = {
+      topic_id: 0,
+      dept_id: 0,
+      staff_id: 0,
+      team_id: 0,
+      sla_id: 0,
+      status_id: 0,
+      sequence_id: 0,
+      number_format: null,
+      dept_name: null,
+    };
+
+    if (resolvedTopicId > 0) {
+      // flags bit0 = active; public required unless allowPrivateTopic (official API)
+      const topicSql = allowPrivateTopic
+        ? `SELECT ht.*, d.name as dept_name
+           FROM ${conn.table('help_topic')} ht
+           LEFT JOIN ${conn.table('department')} d ON ht.dept_id = d.id
+           WHERE ht.topic_id = ? AND (ht.flags & 1) = 1`
+        : `SELECT ht.*, d.name as dept_name
+           FROM ${conn.table('help_topic')} ht
+           LEFT JOIN ${conn.table('department')} d ON ht.dept_id = d.id
+           WHERE ht.topic_id = ? AND ht.ispublic = 1 AND (ht.flags & 1) = 1`;
+
+      topic = await conn.queryOne(topicSql, [resolvedTopicId]);
+      if (!topic) {
+        throw new ValidationError('Invalid or inactive help topic');
+      }
     }
 
-    // Status: topic override, else default open
-    let statusId = parseInt(topic.status_id, 10) || 0;
+    // Status: explicit override → topic override → default open
+    let statusId = parseInt(statusIdOverride, 10) || parseInt(topic.status_id, 10) || 0;
     if (statusId > 0) {
       const st = await conn.queryOne(
         `SELECT id FROM ${conn.table('ticket_status')} WHERE id = ?`,
@@ -651,14 +685,21 @@ module.exports = (conn, data) => {
     );
     if (!user) throw new ValidationError('Invalid userId');
 
-    const deptId = parseInt(topic.dept_id, 10) || 0;
-    const staffId = parseInt(topic.staff_id, 10) || 0;
-    const teamId = parseInt(topic.team_id, 10) || 0;
-    const slaId = parseInt(topic.sla_id, 10) || 0;
+    let deptId = deptIdOverride != null ? parseInt(deptIdOverride, 10) : (parseInt(topic.dept_id, 10) || 0);
+    let staffId = staffIdOverride != null ? parseInt(staffIdOverride, 10) : (parseInt(topic.staff_id, 10) || 0);
+    let teamId = teamIdOverride != null ? parseInt(teamIdOverride, 10) : (parseInt(topic.team_id, 10) || 0);
+    let slaId = slaIdOverride != null ? parseInt(slaIdOverride, 10) : (parseInt(topic.sla_id, 10) || 0);
+    if (isNaN(deptId)) deptId = 0;
+    if (isNaN(staffId)) staffId = 0;
+    if (isNaN(teamId)) teamId = 0;
+    if (isNaN(slaId)) slaId = 0;
 
-    let duedate = null;
-    let estDuedate = null;
-    if (slaId > 0) {
+    let duedate = duedateOverride != null ? new Date(duedateOverride) : null;
+    if (duedate && isNaN(duedate.getTime())) {
+      throw new ValidationError('Invalid duedate');
+    }
+    let estDuedate = duedate;
+    if (!duedate && slaId > 0) {
       const sla = await conn.queryOne(
         `SELECT id, grace_period FROM ${conn.table('sla')} WHERE id = ?`,
         [slaId]
@@ -677,6 +718,7 @@ module.exports = (conn, data) => {
     const displayPoster = poster || user.name || 'User';
     const subjectTrim = subject.trim().substring(0, 255);
     const bodyTrim = body.trim();
+    const topicIdForRow = resolvedTopicId > 0 ? resolvedTopicId : 0;
 
     const created = await conn.transaction(async (txQuery, txQueryOne) => {
       const now = new Date();
@@ -699,7 +741,7 @@ module.exports = (conn, data) => {
         statusId,
         deptId,
         slaId,
-        topicId,
+        topicIdForRow,
         staffId,
         teamId,
         ipAddress || '',
@@ -713,16 +755,11 @@ module.exports = (conn, data) => {
 
       const ticketId = ticketResult.insertId;
 
-      // Dynamic form cdata (subject) — optional if table not bootstrapped
       try {
         await txQuery(`
           INSERT INTO ${conn.table('ticket__cdata')} (ticket_id, subject) VALUES (?, ?)
         `, [ticketId, subjectTrim]);
       } catch (err) {
-        // Missing dynamic table should not abort core ticket write in mixed envs,
-        // but inside a transaction MySQL will mark the tx failed after any error.
-        // Re-throw so callers get a clear failure rather than a half-committed state.
-        // Production installs must have ticket__cdata from form bootstrap.
         throw new ValidationError(
           `Failed to write ticket custom data (ticket__cdata): ${err.message}`
         );
@@ -734,7 +771,7 @@ module.exports = (conn, data) => {
       `, [ticketId, now, now]);
       const threadId = threadResult.insertId;
 
-      await insertThreadEntry(txQuery, {
+      const entryId = await insertThreadEntry(txQuery, {
         threadId,
         userId,
         type: 'M',
@@ -746,18 +783,27 @@ module.exports = (conn, data) => {
         now,
       });
 
+      // Optional attachments on the first message (file + file_chunk + attachment)
+      if (Array.isArray(attachments) && attachments.length > 0) {
+        await storeThreadAttachments(txQuery, {
+          entryId,
+          attachments,
+          now,
+        });
+      }
+
       await logEvent(
         threadId,
         'created',
         null,
         displayPoster,
-        { source: ticketSource, topic_id: topicId },
+        { source: ticketSource, topic_id: topicIdForRow },
         txQuery,
         txQueryOne,
         {
           deptId,
           teamId,
-          topicId,
+          topicId: topicIdForRow,
           uid: userId,
           uidType: 'U',
           threadType: 'T',
@@ -770,17 +816,85 @@ module.exports = (conn, data) => {
         subject: subjectTrim,
         status: 'open',
         status_id: statusId,
-        department: topic.dept_name,
+        department: topic.dept_name || null,
         dept_id: deptId,
         sla_id: slaId || null,
         staff_id: staffId || null,
         team_id: teamId || null,
+        topic_id: topicIdForRow || null,
+        thread_id: threadId,
+        entry_id: entryId,
         duedate,
         created: now,
       };
     });
 
     return created;
+  };
+
+  /**
+   * Store attachments for a thread entry (osTicket file tables).
+   * @param {Function} txQuery
+   * @param {{ entryId: number, attachments: Array, now: Date }}
+   */
+  const storeThreadAttachments = async (txQuery, { entryId, attachments, now }) => {
+    const crypto = require('crypto');
+
+    for (const raw of attachments) {
+      if (!raw || raw.error) continue;
+
+      let buffer = null;
+      let name = (raw.name || 'attachment').toString().substring(0, 255);
+      let mime = (raw.type || raw.mime || 'application/octet-stream').toString().substring(0, 255);
+
+      const data = raw.data;
+      if (!data) continue;
+
+      if (typeof data === 'string' && data.startsWith('data:')) {
+        // RFC 2397 data URL
+        const m = data.match(/^data:([^;,]+)?(?:;([^,]*))?,(.*)$/s);
+        if (!m) continue;
+        if (m[1]) mime = m[1];
+        const isBase64 = (m[2] || '').includes('base64');
+        buffer = isBase64
+          ? Buffer.from(m[3], 'base64')
+          : Buffer.from(decodeURIComponent(m[3]), 'utf8');
+      } else if (typeof data === 'string') {
+        const enc = (raw.encoding || 'base64').toLowerCase();
+        try {
+          buffer = Buffer.from(data, enc === 'base64' ? 'base64' : 'utf8');
+        } catch {
+          continue;
+        }
+      } else if (Buffer.isBuffer(data)) {
+        buffer = data;
+      } else {
+        continue;
+      }
+
+      if (!buffer || buffer.length === 0) continue;
+
+      const key = crypto.randomBytes(32).toString('base64url').substring(0, 86);
+      const signature = crypto.createHash('sha1').update(buffer).digest('base64').substring(0, 86);
+
+      const fileResult = await txQuery(`
+        INSERT INTO ${conn.table('file')}
+          (\`ft\`, \`bk\`, \`type\`, \`size\`, \`key\`, \`signature\`, \`name\`, created)
+        VALUES ('T', 'D', ?, ?, ?, ?, ?, ?)
+      `, [mime, buffer.length, key, signature, name, now]);
+
+      const fileId = fileResult.insertId;
+      await txQuery(`
+        INSERT INTO ${conn.table('file_chunk')} (file_id, chunk_id, filedata)
+        VALUES (?, 0, ?)
+      `, [fileId, buffer]);
+
+      // type H = thread entry attachment (osTicket convention)
+      await txQuery(`
+        INSERT INTO ${conn.table('attachment')} (object_id, type, file_id, name, inline)
+        VALUES (?, 'H', ?, ?, 0)
+      `, [entryId, fileId, name]);
+    }
   };
 
   /**

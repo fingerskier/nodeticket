@@ -222,17 +222,28 @@ const requirePermission = (permission) => {
 /**
  * Require an API key with a specific capability (official/compat routes).
  * Does not establish a staff principal.
+ *
+ * @param {string} capability - e.g. 'can_create_tickets', 'can_exec_cron'
+ * @param {Object} [options]
+ * @param {boolean} [options.plainText=false] - stock plain-text 401 body
  */
-const requireApiKeyCapability = (capability) => {
+const requireApiKeyCapability = (capability, options = {}) => {
+  const plainText = !!options.plainText;
   return async (req, res, next) => {
     const keyAuth = await verifyApiKey(req);
     if (!keyAuth) {
+      if (plainText) {
+        return res.status(401).type('text/plain').send('API key not authorized');
+      }
       return res.status(401).json({
         success: false,
         message: 'Valid API key required',
       });
     }
     if (!keyAuth.permissions?.[capability]) {
+      if (plainText) {
+        return res.status(401).type('text/plain').send('API key not authorized');
+      }
       return res.status(401).json({
         success: false,
         message: 'API key does not have required permission',
