@@ -201,6 +201,43 @@ function getAppQuery() {
   }
 }
 
+/** Draft message persistence across reauth / navigation (sessionStorage) */
+const DRAFT_PREFIX = 'nt_draft_';
+function draftKey(kind, id) {
+  return `${DRAFT_PREFIX}${kind}_${id || 'new'}`;
+}
+function saveDraft(kind, id, text) {
+  try {
+    if (text && String(text).trim()) {
+      sessionStorage.setItem(draftKey(kind, id), String(text));
+    } else {
+      sessionStorage.removeItem(draftKey(kind, id));
+    }
+  } catch { /* private mode */ }
+}
+function loadDraft(kind, id) {
+  try {
+    return sessionStorage.getItem(draftKey(kind, id)) || '';
+  } catch {
+    return '';
+  }
+}
+function clearDraft(kind, id) {
+  try {
+    sessionStorage.removeItem(draftKey(kind, id));
+  } catch { /* ignore */ }
+}
+
+function focusMainHeading() {
+  const h = document.querySelector('#content h1, #content h2');
+  if (h) {
+    if (!h.hasAttribute('tabindex')) h.setAttribute('tabindex', '-1');
+    try { h.focus({ preventScroll: false }); } catch { /* ignore */ }
+  }
+}
+
+const THREAD_PAGE_SIZE = 20;
+
 /**
  * Template helpers
  */
@@ -247,11 +284,18 @@ const views = {
         </div>
       ` : `
         <div class="login-prompt">
-          <p>Please <button class="link-btn" data-state="login">login</button> to view your tickets or submit a new request.</p>
+          <p>Please <button class="link-btn" data-state="login">log in</button> to view your tickets or submit a new request.</p>
+          <p class="guest-actions">
+            <button class="btn btn-primary" data-state="login">Login</button>
+            <button class="btn btn-success" data-state="register">Create Account</button>
+            <button class="btn" data-state="faq">Browse Knowledge Base</button>
+          </p>
+          <p class="text-muted"><a href="/forgot-password">Forgot password?</a></p>
         </div>
       `}
     `;
     bindStateButtons();
+    focusMainHeading();
 
     if (!currentUser) return;
 
@@ -301,12 +345,13 @@ const views = {
               <input type="radio" name="type" value="staff"> Staff Portal
             </label>
           </div>
-          <div class="form-error" id="loginError"></div>
+          <div class="form-error" id="loginError" role="alert" aria-live="assertive"></div>
           <button type="submit" class="btn btn-primary btn-block">Login</button>
         </form>
-        <p class="form-footer">
-          <button class="link-btn" data-state="home">&larr; Back to Home</button>
-          <a href="#" class="link-btn" data-state="register">Create Account</a>
+        <p class="form-footer form-footer-stack">
+          <a href="/forgot-password">Forgot password?</a>
+          <button type="button" class="link-btn" data-state="register">Create Account</button>
+          <button type="button" class="link-btn" data-state="home">&larr; Back to Home</button>
         </p>
       </div>
     `;
@@ -317,6 +362,8 @@ const views = {
     content.classList.add('fade-in');
     await delay(150);
     content.classList.remove('fade-in');
+    focusMainHeading();
+    document.getElementById('username')?.focus();
   },
 
   async register() {
@@ -353,11 +400,12 @@ const views = {
             <label for="reg-confirm">Confirm Password</label>
             <input type="password" id="reg-confirm" name="confirm" required minlength="8" autocomplete="new-password">
           </div>
-          <div class="form-error" id="registerError"></div>
+          <div class="form-error" id="registerError" role="alert" aria-live="assertive"></div>
           <button type="submit" class="btn btn-primary btn-block">Create Account</button>
         </form>
-        <p class="form-footer">
-          <button class="link-btn" data-state="login">&larr; Back to Login</button>
+        <p class="form-footer form-footer-stack">
+          <button type="button" class="link-btn" data-state="login">&larr; Back to Login</button>
+          <a href="/forgot-password">Forgot password?</a>
         </p>
       </div>
     `;
@@ -408,6 +456,8 @@ const views = {
     content.classList.add('fade-in');
     await delay(150);
     content.classList.remove('fade-in');
+    focusMainHeading();
+    document.getElementById('reg-name')?.focus();
   },
 
   async tickets() {
@@ -423,46 +473,68 @@ const views = {
     const query = getAppQuery();
     const page = Math.max(1, parseInt(query.page, 10) || 1);
     const status = query.status || '';
+    const search = query.search != null ? String(query.search) : '';
 
     content.innerHTML = `
       <div class="page-header">
         <h2>My Tickets</h2>
         <button class="btn btn-success" data-state="create">+ New Ticket</button>
       </div>
-      <div class="filters" style="margin-bottom:1rem">
+      <form class="ticket-filters" id="ticketFilters" role="search">
+        <label for="ticketSearch" class="sr-only">Search tickets</label>
+        <input type="search" id="ticketSearch" name="search" value="${escapeHtml(search)}"
+          placeholder="Search # or subject…" autocomplete="off">
         <label for="ticketStatusFilter" class="sr-only">Status</label>
         <select id="ticketStatusFilter" aria-label="Filter by status">
-          <option value="" ${!status ? 'selected' : ''}>All</option>
+          <option value="" ${!status ? 'selected' : ''}>All statuses</option>
           <option value="open" ${status === 'open' ? 'selected' : ''}>Open</option>
           <option value="closed" ${status === 'closed' ? 'selected' : ''}>Closed</option>
         </select>
-      </div>
+        <button type="submit" class="btn btn-primary">Apply</button>
+        ${search || status ? '<button type="button" class="btn" id="clearTicketFilters">Clear</button>' : ''}
+      </form>
       <div id="ticketsList" class="loading" aria-live="polite">
-        <div class="spinner"></div>
+        <div class="spinner" aria-hidden="true"></div>
         <p>Loading tickets...</p>
       </div>
-      <div id="ticketsPagination" class="pagination"></div>
+      <nav id="ticketsPagination" class="pagination" aria-label="Ticket list pages"></nav>
     `;
 
     bindStateButtons();
-    const statusSel = document.getElementById('ticketStatusFilter');
-    if (statusSel) {
-      statusSel.addEventListener('change', () => {
-        const q = { page: 1 };
-        if (statusSel.value) q.status = statusSel.value;
-        app.gotoState('tickets', q);
-      });
-    }
+    /** Same-state query updates do not re-fire onEnter — re-render explicitly. */
+    const goTickets = (q) => {
+      const already = app.is('tickets');
+      app.gotoState('tickets', q, true);
+      if (already) views.tickets();
+    };
+    const applyFilters = () => {
+      const q = { page: 1 };
+      const s = document.getElementById('ticketStatusFilter')?.value;
+      const term = document.getElementById('ticketSearch')?.value?.trim();
+      if (s) q.status = s;
+      if (term) q.search = term;
+      goTickets(q);
+    };
+    document.getElementById('ticketFilters')?.addEventListener('submit', (e) => {
+      e.preventDefault();
+      applyFilters();
+    });
+    document.getElementById('ticketStatusFilter')?.addEventListener('change', applyFilters);
+    document.getElementById('clearTicketFilters')?.addEventListener('click', () => {
+      goTickets({ page: 1 });
+    });
     content.classList.remove('fade-out');
     content.classList.add('fade-in');
     await delay(150);
     content.classList.remove('fade-in');
+    focusMainHeading();
 
     const ticketsList = document.getElementById('ticketsList');
     const pagEl = document.getElementById('ticketsPagination');
     try {
       const qs = new URLSearchParams({ page: String(page), limit: '25' });
       if (status) qs.set('status', status);
+      if (search) qs.set('search', search);
       const res = await api.get(`/tickets?${qs.toString()}`);
       if (!ticketsList) return;
 
@@ -470,7 +542,7 @@ const views = {
       if (!res?.success || rows.length === 0) {
         ticketsList.innerHTML = `
           <div class="empty-state">
-            <p>${escapeHtml(res?.message || 'No tickets found.')}</p>
+            <p>${escapeHtml(res?.message || (search || status ? 'No tickets match your filters.' : 'No tickets found.'))}</p>
             <button class="btn btn-primary" data-state="create">Create Your First Ticket</button>
           </div>
         `;
@@ -484,16 +556,17 @@ const views = {
         <table class="data-table">
           <thead>
             <tr>
-              <th>Ticket #</th>
-              <th>Subject</th>
-              <th>Status</th>
-              <th>Department</th>
-              <th>Created</th>
+              <th scope="col">Ticket #</th>
+              <th scope="col">Subject</th>
+              <th scope="col">Status</th>
+              <th scope="col">Department</th>
+              <th scope="col">Created</th>
             </tr>
           </thead>
           <tbody>
             ${rows.map(t => `
-              <tr class="clickable-row" data-state="ticket" data-id="${t.ticket_id}" tabindex="0" role="link">
+              <tr class="clickable-row" data-state="ticket" data-id="${t.ticket_id}" tabindex="0" role="link"
+                aria-label="Open ticket ${escapeHtml(t.number)}">
                 <td><span class="ticket-number">${escapeHtml(t.number)}</span></td>
                 <td>${escapeHtml(t.subject || 'No Subject')}</td>
                 <td><span class="status status-${t.status?.state || 'open'}">${escapeHtml(t.status?.name || 'Open')}</span></td>
@@ -510,16 +583,19 @@ const views = {
       if (pagEl && totalPages > 1) {
         const prev = page > 1
           ? `<button type="button" class="btn" data-page="${page - 1}">&laquo; Previous</button>`
-          : '';
+          : '<span class="pagination-disabled" aria-hidden="true">&laquo; Previous</span>';
         const next = page < totalPages
           ? `<button type="button" class="btn" data-page="${page + 1}">Next &raquo;</button>`
-          : '';
-        pagEl.innerHTML = `${prev} <span>Page ${page} of ${totalPages} (${total})</span> ${next}`;
+          : '<span class="pagination-disabled" aria-hidden="true">Next &raquo;</span>';
+        pagEl.innerHTML = `${prev} <span aria-current="page">Page ${page} of ${totalPages} (${total})</span> ${next}`;
         pagEl.querySelectorAll('[data-page]').forEach((btn) => {
           btn.addEventListener('click', () => {
             const q = { page: btn.getAttribute('data-page') };
             if (status) q.status = status;
-            app.gotoState('tickets', q);
+            if (search) q.search = search;
+            const already = app.is('tickets');
+            app.gotoState('tickets', q, true);
+            if (already) views.tickets();
           });
         });
       } else if (pagEl) {
@@ -534,7 +610,7 @@ const views = {
         ticketsList.classList.remove('loading');
         ticketsList.innerHTML = `
           <div class="error-state">
-            <p class="error">Error loading tickets. Please try again.</p>
+            <p class="error" role="alert">Error loading tickets. Please try again.</p>
             <button class="btn" type="button" id="retryTickets">Retry</button>
           </div>
         `;
@@ -574,9 +650,9 @@ const views = {
     content.classList.remove('fade-in');
 
     try {
-      const [ticketRes, threadRes, attachRes] = await Promise.all([
+      const [ticketRes, threadProbe, attachRes] = await Promise.all([
         api.get(`/tickets/${ticketId}`),
-        api.get(`/tickets/${ticketId}/thread`),
+        api.get(`/tickets/${ticketId}/thread?page=1&limit=${THREAD_PAGE_SIZE}`),
         api.get(`/tickets/${ticketId}/attachments`).catch(() => ({ success: false, data: [] })),
       ]);
 
@@ -593,9 +669,15 @@ const views = {
       }
 
       const t = ticketRes.data;
-      const entries = Array.isArray(threadRes.data) ? threadRes.data : [];
+      const totalPages = Math.max(1, threadProbe.pagination?.totalPages || 1);
+      const totalEntries = threadProbe.pagination?.total || 0;
+      // Load newest page first (chronological ASC within page)
+      let oldestLoadedPage = totalPages;
+      let threadRes = totalPages === 1
+        ? threadProbe
+        : await api.get(`/tickets/${ticketId}/thread?page=${totalPages}&limit=${THREAD_PAGE_SIZE}`);
+      let entries = Array.isArray(threadRes.data) ? threadRes.data.slice() : [];
       const attachments = Array.isArray(attachRes?.data) ? attachRes.data : [];
-      // Group attachments by entry_id for inline display
       const byEntry = new Map();
       for (const a of attachments) {
         const key = a.entry_id || 0;
@@ -603,11 +685,28 @@ const views = {
         byEntry.get(key).push(a);
       }
 
+      const renderEntry = (e) => `
+        <div class="thread-entry thread-entry-${e.type === 'M' ? 'message' : 'response'}" data-entry-id="${e.id}">
+          <div class="entry-header">
+            <strong>${e.type === 'M' ? 'You' : escapeHtml(e.poster || 'Support')}</strong>
+            <span class="entry-date">${formatDate(e.created)}</span>
+          </div>
+          <div class="entry-body">${escapeHtml(e.body)}</div>
+          ${byEntry.has(e.id) ? `
+            <div class="entry-attachments">
+              ${renderAttachmentsList(ticketId, byEntry.get(e.id))}
+            </div>
+          ` : ''}
+        </div>
+      `;
+
+      const draftReply = loadDraft('reply', ticketId);
+
       content.innerHTML = `
         <div class="ticket-detail slide-in">
           <div class="ticket-header">
             <div class="ticket-title">
-              <button class="btn btn-sm" data-state="tickets">&larr;</button>
+              <button class="btn btn-sm" data-state="tickets" aria-label="Back to tickets">&larr;</button>
               <h2>Ticket #${escapeHtml(t.number)}</h2>
             </div>
             <span class="status status-${t.status?.state || 'open'}">${escapeHtml(t.status?.name || 'Open')}</span>
@@ -616,30 +715,30 @@ const views = {
           <div class="ticket-info">
             <div class="info-grid">
               <div class="info-item">
-                <label>Subject</label>
+                <span class="info-label">Subject</span>
                 <span>${escapeHtml(t.subject || 'No Subject')}</span>
               </div>
               <div class="info-item">
-                <label>Department</label>
+                <span class="info-label">Department</span>
                 <span>${escapeHtml(t.department?.name || 'N/A')}</span>
               </div>
               <div class="info-item">
-                <label>Priority</label>
+                <span class="info-label">Priority</span>
                 <span style="color: ${t.priority?.priority_color || '#666'}">${escapeHtml(t.priority?.priority || 'Normal')}</span>
               </div>
               <div class="info-item">
-                <label>Created</label>
+                <span class="info-label">Created</span>
                 <span>${formatDate(t.created)}</span>
               </div>
               ${t.staff ? `
                 <div class="info-item">
-                  <label>Assigned To</label>
+                  <span class="info-label">Assigned To</span>
                   <span>${escapeHtml(t.staff.name)}</span>
                 </div>
               ` : ''}
               ${t.closed ? `
                 <div class="info-item">
-                  <label>Closed</label>
+                  <span class="info-label">Closed</span>
                   <span>${formatDate(t.closed)}</span>
                 </div>
               ` : ''}
@@ -652,21 +751,13 @@ const views = {
           </div>
 
           <div class="thread">
-            <h3>Conversation</h3>
-            ${entries.length === 0 ? '<p class="empty-thread">No messages yet.</p>' : entries.map(e => `
-              <div class="thread-entry thread-entry-${e.type === 'M' ? 'message' : 'response'}">
-                <div class="entry-header">
-                  <strong>${e.type === 'M' ? 'You' : escapeHtml(e.poster || 'Support')}</strong>
-                  <span class="entry-date">${formatDate(e.created)}</span>
-                </div>
-                <div class="entry-body">${escapeHtml(e.body)}</div>
-                ${byEntry.has(e.id) ? `
-                  <div class="entry-attachments">
-                    ${renderAttachmentsList(ticketId, byEntry.get(e.id))}
-                  </div>
-                ` : ''}
-              </div>
-            `).join('')}
+            <h3>Conversation ${totalEntries ? `<span class="thread-count">(${totalEntries})</span>` : ''}</h3>
+            <div id="loadOlderWrap" class="load-older-wrap" ${oldestLoadedPage <= 1 ? 'hidden' : ''}>
+              <button type="button" class="btn btn-sm" id="loadOlderBtn">Load older messages</button>
+            </div>
+            <div id="threadEntries">
+              ${entries.length === 0 ? '<p class="empty-thread">No messages yet.</p>' : entries.map(renderEntry).join('')}
+            </div>
           </div>
 
           ${t.status?.state !== 'closed' ? `
@@ -674,15 +765,16 @@ const views = {
             <h3>Post a Reply</h3>
             <form id="replyForm">
               <div class="form-group">
-                <textarea id="replyMessage" name="message" required rows="4" placeholder="Type your reply..."></textarea>
+                <label for="replyMessage" class="sr-only">Reply message</label>
+                <textarea id="replyMessage" name="message" required rows="4" placeholder="Type your reply...">${escapeHtml(draftReply)}</textarea>
               </div>
               <div class="form-group">
                 <label for="replyFiles">Attachments (optional, max 5 × 5MB)</label>
                 <input type="file" id="replyFiles" name="files" multiple
                   accept=".png,.jpg,.jpeg,.gif,.pdf,.txt,.doc,.docx,.zip,image/*,application/pdf">
               </div>
-              <div class="form-error" id="replyError" aria-live="polite"></div>
-              <div id="replyNotice"></div>
+              <div class="form-error" id="replyError" role="alert" aria-live="assertive"></div>
+              <div id="replyNotice" aria-live="polite"></div>
               <button type="submit" class="btn btn-primary">Send Reply</button>
             </form>
           </div>
@@ -700,9 +792,46 @@ const views = {
       `;
 
       bindAttachmentDownloads(ticketId, content);
+      focusMainHeading();
 
-      // Bind reply form
+      const loadOlderBtn = document.getElementById('loadOlderBtn');
+      const loadOlderWrap = document.getElementById('loadOlderWrap');
+      const threadEl = document.getElementById('threadEntries');
+      if (loadOlderBtn && threadEl) {
+        loadOlderBtn.addEventListener('click', async () => {
+          if (oldestLoadedPage <= 1) return;
+          loadOlderBtn.disabled = true;
+          loadOlderBtn.textContent = 'Loading…';
+          try {
+            const prevPage = oldestLoadedPage - 1;
+            const older = await api.get(
+              `/tickets/${ticketId}/thread?page=${prevPage}&limit=${THREAD_PAGE_SIZE}`
+            );
+            const olderEntries = Array.isArray(older?.data) ? older.data : [];
+            oldestLoadedPage = prevPage;
+            if (olderEntries.length) {
+              const html = olderEntries.map(renderEntry).join('');
+              threadEl.insertAdjacentHTML('afterbegin', html);
+              bindAttachmentDownloads(ticketId, threadEl);
+            }
+            if (oldestLoadedPage <= 1 && loadOlderWrap) {
+              loadOlderWrap.hidden = true;
+            }
+          } catch (err) {
+            console.error('Load older failed:', err);
+          } finally {
+            loadOlderBtn.disabled = false;
+            loadOlderBtn.textContent = 'Load older messages';
+          }
+        });
+      }
+
+      // Bind reply form + draft autosave
       const replyForm = document.getElementById('replyForm');
+      const replyMsg = document.getElementById('replyMessage');
+      if (replyMsg) {
+        replyMsg.addEventListener('input', () => saveDraft('reply', ticketId, replyMsg.value));
+      }
       if (replyForm) {
         replyForm.addEventListener('submit', async (e) => {
           e.preventDefault();
@@ -718,21 +847,27 @@ const views = {
           if (noticeDiv) noticeDiv.innerHTML = '';
 
           try {
-            let attachments = [];
+            let replyAttachments = [];
             if (fileInput?.files?.length) {
-              attachments = await filesToAttachments(fileInput.files);
+              replyAttachments = await filesToAttachments(fileInput.files);
             }
             const payload = { message: msgEl.value };
-            if (attachments.length) payload.attachments = attachments;
+            if (replyAttachments.length) payload.attachments = replyAttachments;
             const res = await api.post(`/tickets/${ticketId}/reply`, payload);
             if (res.success) {
+              clearDraft('reply', ticketId);
+              const reloadTicket = () => {
+                const already = app.is('ticket');
+                app.gotoState('ticket', { id: ticketId }, true);
+                if (already) views.ticket();
+              };
               if (res.notification && res.notification.sent === false
                 && res.notification.reason !== 'user_message'
                 && res.notification.reason !== 'no_email') {
                 if (noticeDiv) noticeDiv.innerHTML = notificationBanner(res.notification);
-                setTimeout(() => app.gotoState('ticket', { id: ticketId }), 1200);
+                setTimeout(reloadTicket, 1200);
               } else {
-                app.gotoState('ticket', { id: ticketId });
+                reloadTicket();
               }
             } else {
               errorDiv.textContent = res.message || 'Failed to send reply.';
@@ -839,8 +974,8 @@ const views = {
               accept=".png,.jpg,.jpeg,.gif,.pdf,.txt,.doc,.docx,.zip,image/*,application/pdf">
           </div>
 
-          <div class="form-error" id="createError" aria-live="polite"></div>
-          <div id="createNotice"></div>
+          <div class="form-error" id="createError" role="alert" aria-live="assertive"></div>
+          <div id="createNotice" aria-live="polite"></div>
 
           <div class="form-actions">
             <button type="button" class="btn" data-state="tickets">Cancel</button>
@@ -855,6 +990,34 @@ const views = {
     content.classList.add('fade-in');
     await delay(150);
     content.classList.remove('fade-in');
+    focusMainHeading();
+
+    // Restore create draft
+    const draftCreate = loadDraft('create', 'new');
+    if (draftCreate) {
+      try {
+        const parsed = JSON.parse(draftCreate);
+        if (parsed.subject) document.getElementById('subject').value = parsed.subject;
+        if (parsed.message) document.getElementById('message').value = parsed.message;
+        if (parsed.topic_id) {
+          // applied after topics load
+          document.getElementById('createTicketForm').dataset.draftTopic = String(parsed.topic_id);
+        }
+      } catch {
+        document.getElementById('message').value = draftCreate;
+      }
+    }
+    const persistCreateDraft = () => {
+      saveDraft('create', 'new', JSON.stringify({
+        topic_id: document.getElementById('topic_id')?.value || '',
+        subject: document.getElementById('subject')?.value || '',
+        message: document.getElementById('message')?.value || '',
+      }));
+    };
+    ['topic_id', 'subject', 'message'].forEach((id) => {
+      document.getElementById(id)?.addEventListener('input', persistCreateDraft);
+      document.getElementById(id)?.addEventListener('change', persistCreateDraft);
+    });
 
     // Load topics
     try {
@@ -868,6 +1031,8 @@ const views = {
             <option value="${t.topic_id}">${escapeHtml(t.topic)}</option>
           `).join('')}
         `;
+        const draftTopic = document.getElementById('createTicketForm')?.dataset.draftTopic;
+        if (draftTopic) select.value = draftTopic;
       } else {
         select.innerHTML = '<option value="">No topics available</option>';
       }
@@ -885,9 +1050,15 @@ const views = {
     await delay(150);
 
     content.innerHTML = `
-      <h2>Knowledge Base</h2>
-      <div id="faqList" class="loading">
-        <div class="spinner"></div>
+      <div class="page-header">
+        <h2>Knowledge Base</h2>
+      </div>
+      <form class="faq-search" id="faqSearchForm" role="search">
+        <label for="faqSearch" class="sr-only">Search articles</label>
+        <input type="search" id="faqSearch" placeholder="Search questions…" autocomplete="off">
+      </form>
+      <div id="faqList" class="loading" aria-live="polite">
+        <div class="spinner" aria-hidden="true"></div>
         <p>Loading articles...</p>
       </div>
     `;
@@ -896,6 +1067,7 @@ const views = {
     content.classList.add('fade-in');
     await delay(150);
     content.classList.remove('fade-in');
+    focusMainHeading();
 
     try {
       const res = await api.get('/faq');
@@ -909,25 +1081,47 @@ const views = {
         return;
       }
 
-      faqList.innerHTML = `
-        <div class="faq-list">
-          ${items.map(f => `
-            <div class="faq-item">
-              <h3 class="faq-question" tabindex="0" role="button">${escapeHtml(f.question)}</h3>
-              ${f.category?.name ? `<span class="faq-category">${escapeHtml(f.category.name)}</span>` : ''}
-              <div class="faq-answer">${escapeHtml(f.answer)}</div>
-            </div>
-          `).join('')}
-        </div>
-      `;
+      const renderFaq = (list) => {
+        if (!list.length) {
+          faqList.innerHTML = '<p class="empty-state">No articles match your search.</p>';
+          return;
+        }
+        faqList.innerHTML = `
+          <div class="faq-list">
+            ${list.map((f, i) => `
+              <div class="faq-item">
+                <h3 class="faq-question" id="faq-q-${i}" tabindex="0" role="button"
+                  aria-expanded="false" aria-controls="faq-a-${i}">${escapeHtml(f.question)}</h3>
+                ${f.category?.name ? `<span class="faq-category">${escapeHtml(f.category.name)}</span>` : ''}
+                <div class="faq-answer" id="faq-a-${i}" role="region" aria-labelledby="faq-q-${i}">${escapeHtml(f.answer)}</div>
+              </div>
+            `).join('')}
+          </div>
+        `;
+        initFaqAccordion();
+      };
 
+      renderFaq(items);
       faqList.classList.remove('loading');
-      initFaqAccordion();
+
+      const searchInput = document.getElementById('faqSearch');
+      searchInput?.addEventListener('input', () => {
+        const q = (searchInput.value || '').trim().toLowerCase();
+        if (!q) {
+          renderFaq(items);
+          return;
+        }
+        renderFaq(items.filter((f) =>
+          (f.question || '').toLowerCase().includes(q)
+          || (f.answer || '').toLowerCase().includes(q)
+          || (f.category?.name || '').toLowerCase().includes(q)
+        ));
+      });
     } catch (e) {
       console.error('Error loading FAQ:', e);
       const faqList = document.getElementById('faqList');
       if (faqList) {
-        faqList.innerHTML = '<p class="error">Error loading knowledge base.</p>';
+        faqList.innerHTML = '<p class="error" role="alert">Error loading knowledge base.</p>';
         faqList.classList.remove('loading');
       }
     }
@@ -1080,12 +1274,13 @@ async function handleCreateTicket(e) {
     const res = await api.post('/tickets', data);
 
     if (res.success) {
+      clearDraft('create', 'new');
       if (res.notification && res.notification.sent === false
         && res.notification.reason !== 'no_email') {
         if (noticeDiv) noticeDiv.innerHTML = notificationBanner(res.notification);
-        setTimeout(() => app.gotoState('ticket', { id: res.data.ticket_id }), 1200);
+        setTimeout(() => app.gotoState('ticket', { id: res.data.ticket_id }, true), 1200);
       } else {
-        app.gotoState('ticket', { id: res.data.ticket_id });
+        app.gotoState('ticket', { id: res.data.ticket_id }, true);
       }
     } else {
       if (errorDiv) errorDiv.textContent = res.message || 'Failed to create ticket. Please try again.';
@@ -1100,14 +1295,20 @@ async function handleCreateTicket(e) {
 }
 
 async function handleLogout() {
+  clearTimeout(idleTimer);
+  clearTimeout(idleWarningTimer);
   try {
-    await fetch('/logout', { credentials: 'include' });
-    currentUser = null;
-    updateNav();
-    app.gotoState('home');
+    await fetch('/logout', { credentials: 'include', redirect: 'manual' });
   } catch (e) {
     console.error('Logout error:', e);
-    window.location.href = '/logout';
+  }
+  currentUser = null;
+  if (window.APP_CONFIG) window.APP_CONFIG.user = null;
+  updateNav();
+  try {
+    app.gotoState('home', null, true);
+  } catch {
+    window.location.href = '/';
   }
 }
 
@@ -1177,13 +1378,14 @@ function updateNav() {
   if (!nav) return;
 
   if (currentUser) {
+    const displayName = currentUser.name || currentUser.username || 'Account';
     nav.innerHTML = `
-      <button class="nav-link" data-state="home">Home</button>
-      <button class="nav-link" data-state="tickets">My Tickets</button>
-      <button class="nav-link" data-state="create">New Ticket</button>
-      <button class="nav-link" data-state="faq">Knowledge Base</button>
-      <span class="user-info">${escapeHtml(currentUser.name)}</span>
-      <button class="nav-link" id="logoutBtn">Logout</button>
+      <button type="button" class="nav-link" data-state="home">Home</button>
+      <button type="button" class="nav-link" data-state="tickets">My Tickets</button>
+      <button type="button" class="nav-link" data-state="create">New Ticket</button>
+      <button type="button" class="nav-link" data-state="faq">Knowledge Base</button>
+      <a class="nav-link" href="/profile" id="profileLink">${escapeHtml(displayName)}</a>
+      <button type="button" class="nav-link" id="logoutBtn">Logout</button>
     `;
     document.getElementById('logoutBtn').addEventListener('click', handleLogout);
 
@@ -1194,24 +1396,26 @@ function updateNav() {
     if (currentUser && currentUser.verified === false) {
       const banner = document.createElement('div');
       banner.className = 'verification-banner';
+      banner.setAttribute('role', 'status');
       banner.innerHTML = `
         <div class="container">
           <p>Your email is not verified. Please check your inbox.
-            <button class="btn btn-sm" id="resendVerification">Resend Verification Email</button>
+            <button type="button" class="btn btn-sm" id="resendVerification">Resend Verification Email</button>
           </p>
         </div>
       `;
-      document.querySelector('.main').prepend(banner);
-      document.getElementById('resendVerification').addEventListener('click', async () => {
+      document.querySelector('.main')?.prepend(banner);
+      document.getElementById('resendVerification')?.addEventListener('click', async () => {
         const res = await api.post('/auth/resend-verification', {});
         alert(res.message || 'Verification email sent');
       });
     }
   } else {
     nav.innerHTML = `
-      <button class="nav-link" data-state="home">Home</button>
-      <button class="nav-link" data-state="faq">Knowledge Base</button>
-      <button class="nav-link" data-state="login">Login</button>
+      <button type="button" class="nav-link" data-state="home">Home</button>
+      <button type="button" class="nav-link" data-state="faq">Knowledge Base</button>
+      <button type="button" class="nav-link" data-state="login">Login</button>
+      <button type="button" class="nav-link" data-state="register">Register</button>
     `;
   }
 
@@ -1227,8 +1431,8 @@ function delay(ms) {
  */
 let idleTimer = null;
 let idleWarningTimer = null;
-const IDLE_TIMEOUT = window.APP_CONFIG?.idleTimeout || 30 * 60 * 1000;
-const IDLE_WARNING = 5 * 60 * 1000; // warn 5 min before
+const IDLE_TIMEOUT = Number(window.APP_CONFIG?.idleTimeout) || 30 * 60 * 1000;
+const IDLE_WARNING = Math.min(5 * 60 * 1000, Math.max(30 * 1000, Math.floor(IDLE_TIMEOUT / 6)));
 
 function resetIdleTimers() {
   if (!currentUser) return;
@@ -1240,40 +1444,53 @@ function resetIdleTimers() {
   const existing = document.querySelector('.idle-warning');
   if (existing) existing.remove();
 
-  // Set warning timer
+  // Set warning timer (aligned under server idleTimeout)
+  const warnDelay = Math.max(0, IDLE_TIMEOUT - IDLE_WARNING);
   idleWarningTimer = setTimeout(() => {
     const warning = document.createElement('div');
     warning.className = 'idle-warning';
+    warning.setAttribute('role', 'alert');
     warning.innerHTML = `
       <div class="container">
         <p>Your session will expire soon due to inactivity.
-          <button class="btn btn-sm" id="dismissIdleWarning">Stay Logged In</button>
+          <button type="button" class="btn btn-sm" id="dismissIdleWarning">Stay Logged In</button>
         </p>
       </div>
     `;
-    document.querySelector('.main').prepend(warning);
-    document.getElementById('dismissIdleWarning').addEventListener('click', async () => {
-      await api.get('/auth/me');
+    document.querySelector('.main')?.prepend(warning);
+    document.getElementById('dismissIdleWarning')?.addEventListener('click', async () => {
+      try { await api.get('/auth/me'); } catch { /* ignore */ }
       warning.remove();
       resetIdleTimers();
     });
-  }, IDLE_TIMEOUT - IDLE_WARNING);
+  }, warnDelay);
 
-  // Set logout timer
-  idleTimer = setTimeout(() => {
-    currentUser = null;
-    updateNav();
-    app.gotoState('login');
+  // Set logout timer — full session teardown (matches server idle)
+  idleTimer = setTimeout(async () => {
     const existing = document.querySelector('.idle-warning');
     if (existing) existing.remove();
+    await handleLogout();
+    app.gotoState('login', null, true);
+    const content = document.getElementById('content');
+    if (content && !document.getElementById('loginError')) {
+      // soft notice after idle logout paints login
+      setTimeout(() => {
+        const err = document.getElementById('loginError');
+        if (err) err.textContent = 'You were logged out due to inactivity.';
+      }, 200);
+    }
   }, IDLE_TIMEOUT);
 }
 
+let idleListenersBound = false;
 function initIdleDetection() {
   if (!currentUser) return;
-  ['click', 'keypress', 'scroll', 'mousemove'].forEach(event => {
-    document.addEventListener(event, () => resetIdleTimers(), { passive: true });
-  });
+  if (!idleListenersBound) {
+    idleListenersBound = true;
+    ['click', 'keydown', 'scroll', 'mousemove', 'touchstart'].forEach((event) => {
+      document.addEventListener(event, () => resetIdleTimers(), { passive: true });
+    });
+  }
   resetIdleTimers();
 }
 
@@ -1284,46 +1501,65 @@ async function initApp() {
   // Get user info from server-injected data
   currentUser = window.APP_CONFIG?.user || null;
 
-  // Initialize ygdrassil state machine
+  if (typeof StateMachine !== 'function') {
+    console.error('Ygdrassil StateMachine not loaded');
+    const content = document.getElementById('content');
+    if (content) {
+      content.innerHTML = '<div class="error-state"><h2>Failed to load app shell</h2><p>Could not load the state machine library. Check network/CDN access.</p></div>';
+    }
+    return;
+  }
+
+  // Initialize ygdrassil state machine (v2026.7.x API)
   app = new StateMachine({
     name: 'app',
     initial: 'home',
     states: {
       home: {
         onEnter: () => views.home(),
-        transition: ['login', 'tickets', 'create', 'faq', 'ticket']
+        transition: ['login', 'register', 'tickets', 'create', 'faq', 'ticket']
       },
       login: {
         onEnter: () => views.login(),
-        transition: ['home', 'tickets', 'register']
+        transition: ['home', 'tickets', 'register', 'faq']
       },
       register: {
         onEnter: () => views.register(),
-        transition: ['login', 'home']
+        transition: ['login', 'home', 'faq']
       },
       tickets: {
         onEnter: () => views.tickets(),
-        transition: ['home', 'ticket', 'create', 'faq']
+        transition: ['home', 'ticket', 'create', 'faq', 'login']
       },
       ticket: {
         onEnter: () => views.ticket(),
-        transition: ['tickets', 'home']
+        transition: ['tickets', 'home', 'create', 'faq', 'login']
       },
       create: {
         onEnter: () => views.create(),
-        transition: ['tickets', 'ticket', 'home']
+        transition: ['tickets', 'ticket', 'home', 'faq', 'login']
       },
       faq: {
         onEnter: () => views.faq(),
-        transition: ['home', 'tickets', 'login', 'create']
+        transition: ['home', 'tickets', 'login', 'register', 'create']
       }
     },
     onEnter: (state) => {
-      // Update active nav state
-      document.querySelectorAll('.nav-link').forEach(link => {
-        link.classList.toggle('active', link.dataset.state === state);
+      document.querySelectorAll('.nav-link[data-state]').forEach((link) => {
+        const active = link.dataset.state === state;
+        link.classList.toggle('active', active);
+        if (active) link.setAttribute('aria-current', 'page');
+        else link.removeAttribute('aria-current');
       });
+    },
+    onTransitionDenied: (from, to) => {
+      console.warn(`Navigation denied: ${from} → ${to}`);
     }
+  });
+
+  document.getElementById('siteLogo')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    app.gotoState('home', null, true);
   });
 
   updateNav();

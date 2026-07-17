@@ -45,21 +45,22 @@ const renderSPA = (base) => `
   <link rel="stylesheet" href="/css/styles.css">
 </head>
 <body>
+  <a class="skip-link" href="#content">Skip to main content</a>
   <header class="header">
     <div class="container">
       <div class="header-content">
-        <a href="#" class="logo" onclick="event.preventDefault(); app.gotoState('home');">${base.title}</a>
-        <nav class="nav">
+        <a href="#?yg-app=home" class="logo" id="siteLogo">${base.title}</a>
+        <nav class="nav" aria-label="Main">
           <!-- Navigation will be dynamically updated by SPA -->
         </nav>
       </div>
     </div>
   </header>
-  <main class="main">
+  <main class="main" id="main" tabindex="-1">
     <div class="container">
-      <div id="content">
+      <div id="content" role="region" aria-live="polite">
         <div class="loading">
-          <div class="spinner"></div>
+          <div class="spinner" aria-hidden="true"></div>
           <p>Loading...</p>
         </div>
       </div>
@@ -78,13 +79,14 @@ const renderSPA = (base) => `
       user: ${JSON.stringify(base.user)},
       enableKB: ${base.enableKB},
       csrfToken: ${JSON.stringify(base.csrfToken || '')},
-      idleTimeout: ${require('../config').session.idleTimeout}
+      idleTimeout: ${require('../config').session.idleTimeout},
+      ygdrassil: '2026.7.13'
     };
   </script>
 
-  <!-- Ygdrassil State Machine (vanilla) -->
+  <!-- Ygdrassil State Machine (vanilla) — pin version for production -->
   <script type="module">
-    import { StateMachine } from 'https://cdn.jsdelivr.net/npm/ygdrassil@2026.1.6/vanilla/StateMachine.js';
+    import { StateMachine } from 'https://cdn.jsdelivr.net/npm/ygdrassil@2026.7.13/vanilla/StateMachine.js';
     window.StateMachine = StateMachine;
 
     // Load the SPA application after StateMachine is available
@@ -95,7 +97,6 @@ const renderSPA = (base) => `
 </body>
 </html>
 `;
-
 /**
  * Legacy render for non-SPA pages (login form fallback)
  */
@@ -594,7 +595,7 @@ router.get('/faq', asyncHandler(async (req, res) => {
  */
 router.get('/profile', asyncHandler(async (req, res) => {
   if (!req.session?.user) {
-    return res.redirect('/login');
+    return res.redirect('/#?yg-app=login');
   }
 
   const base = await getBaseData(req);

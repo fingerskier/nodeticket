@@ -500,8 +500,13 @@ Do **not** ship note UI before C-03 / A0.5 is green.
 
 ### 14.2 Exit criteria
 
-- [ ] User stories from FINDINGS.GROK §4.1 all pass browser acceptance without console errors  
-- [ ] Automated a11y smoke (axe or equivalent) on login, list, detail, create  
+- [x] Account flows discoverable: register, login, forgot/reset (HTML), profile link, logout; guest CTAs  
+- [x] Tickets: search + status filter + pagination; thread newest page + load older  
+- [x] Drafts: create + reply preserved in sessionStorage across reauth  
+- [x] Session idle uses `APP_CONFIG.idleTimeout`; warning + full logout  
+- [x] A11y: skip link, live regions, FAQ keyboard accordion, focus on headings, table/nav labels  
+- [ ] Automated a11y smoke (axe or equivalent) on login, list, detail, create — optional follow-up  
+- [ ] Full browser acceptance of FINDINGS.GROK §4.1 without console errors — manual  
 
 ---
 
@@ -703,6 +708,7 @@ This PLAN incorporates both: CODEX order, GROK product completeness after A4.
 | 2026-07-17 | **MySQL fixture + HTTP integration green:** Docker compose MySQL:8 on :3307; `scripts/fixture-bootstrap.js` applies `docs/mysql.sql` + seed (admin/customer/API key); `npm run test:http` — 12/12 pass (login, create/reply/close/reopen, note privacy, tickets.json/xml, cron Completed, purpose JWT isolation). Schema fixes: backtick `mid`, list.configuration no TEXT default. App exports `{ app, start }` for tests. |
 | 2026-07-17 | **U2 attachments + notify UI:** Customer SPA file upload on create/reply (RFC2397 data URLs), attachment list + authenticated download, notification failure banners. Staff admin ticket detail: attachment panel, per-entry links, reply attachments, standalone upload form, warn flash when email notify fails (write not rolled back). CSS in `styles.css` / `admin.css`. |
 | 2026-07-17 | **U2 fixture HTTP attaches:** create+reply with data-URL files → list → download bytes; unauth download 401; non-owner JWT 403. Suite is 14 tests (skip when fixture down). |
+| 2026-07-17 | **U3 customer portal hardening + ygdrassil pin:** CDN `ygdrassil@2026.7.13`. SPA: guest register/login CTAs, forgot-password links, profile nav, ticket search/filter/pagination, thread load-older (newest page first), create/reply drafts in sessionStorage, idle timeout aligned to server + full logout, skip-link / live errors / FAQ keyboard a11y. |
 
 ---
 
