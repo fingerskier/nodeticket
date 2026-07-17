@@ -477,8 +477,8 @@ Do **not** ship note UI before C-03 / A0.5 is green.
 
 - [x] Customer SPA: attach on create/reply; list + download on ticket detail; notify failure banner  
 - [x] Staff admin: attach list/download on detail; reply + standalone upload; notify failure flash  
-- [ ] End-to-end attach on create and reply in fixture (manual / HTTP suite expansion)  
-- [ ] Unauthorized download denied (covered by API `canAccessTicket`; add fixture assert when convenient)  
+- [x] End-to-end attach on create and reply in fixture (`test/integration/http.fixture.test.js`)  
+- [x] Unauthorized download denied (401 no auth / 403 non-owner)  
 
 ---
 
@@ -702,6 +702,7 @@ This PLAN incorporates both: CODEX order, GROK product completeness after A4.
 | 2026-07-16 | **U0/U1 staff ops UI:** Admin ticket queue (search, status, dept, assignee, unassigned fix, filter-preserving pagination, staff visibility scope); ticket detail ops (reply + canned, internal note, assign/team/dept, close/reopen); SPA ticket list pagination + status filter + keyboard row open. Login triage still deferred. |
 | 2026-07-17 | **MySQL fixture + HTTP integration green:** Docker compose MySQL:8 on :3307; `scripts/fixture-bootstrap.js` applies `docs/mysql.sql` + seed (admin/customer/API key); `npm run test:http` — 12/12 pass (login, create/reply/close/reopen, note privacy, tickets.json/xml, cron Completed, purpose JWT isolation). Schema fixes: backtick `mid`, list.configuration no TEXT default. App exports `{ app, start }` for tests. |
 | 2026-07-17 | **U2 attachments + notify UI:** Customer SPA file upload on create/reply (RFC2397 data URLs), attachment list + authenticated download, notification failure banners. Staff admin ticket detail: attachment panel, per-entry links, reply attachments, standalone upload form, warn flash when email notify fails (write not rolled back). CSS in `styles.css` / `admin.css`. |
+| 2026-07-17 | **U2 fixture HTTP attaches:** create+reply with data-URL files → list → download bytes; unauth download 401; non-owner JWT 403. Suite is 14 tests (skip when fixture down). |
 
 ---
 

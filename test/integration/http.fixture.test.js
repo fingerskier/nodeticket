@@ -248,6 +248,127 @@ describe('fixture HTTP: official API', () => {
   });
 });
 
+describe('fixture HTTP: attachments', () => {
+  const hiTxtB64 = Buffer.from('Hello fixture attach').toString('base64');
+  const hiTxtDataUrl = `data:text/plain;base64,${hiTxtB64}`;
+  const replyTxtB64 = Buffer.from('Reply attachment body').toString('base64');
+  const replyTxtDataUrl = `data:text/plain;base64,${replyTxtB64}`;
+
+  test('create + reply with attachments: list and download round-trip', async (t) => {
+    if (skipIfNoFixture(t)) return;
+
+    const login = await jsonFetch(baseUrl, 'POST', '/api/v1/auth/login', {
+      body: { username: 'customer', password: 'password123', type: 'user' },
+    });
+    assert.equal(login.status, 200, login.text);
+    const token = login.json.token;
+
+    const create = await jsonFetch(baseUrl, 'POST', '/api/v1/tickets', {
+      token,
+      body: {
+        topic_id: 1,
+        subject: 'Attachment round-trip',
+        message: 'Ticket with file on create.',
+        attachments: [
+          { name: 'hello.txt', type: 'text/plain', data: hiTxtDataUrl },
+        ],
+      },
+    });
+    assert.equal(create.status, 201, create.text);
+    const ticketId = create.json.data.ticket_id;
+    assert.ok(ticketId);
+
+    const list1 = await jsonFetch(baseUrl, 'GET', `/api/v1/tickets/${ticketId}/attachments`, {
+      token,
+    });
+    assert.equal(list1.status, 200, list1.text);
+    assert.ok(Array.isArray(list1.json.data));
+    assert.ok(list1.json.data.length >= 1);
+    const createdFile = list1.json.data.find((a) => a.name === 'hello.txt');
+    assert.ok(createdFile, 'create attachment listed');
+    assert.ok(createdFile.file_id);
+
+    const dl1 = await fetch(
+      `${baseUrl}/api/v1/tickets/${ticketId}/attachments/${createdFile.file_id}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    assert.equal(dl1.status, 200, await dl1.clone().text());
+    const bytes1 = Buffer.from(await dl1.arrayBuffer());
+    assert.equal(bytes1.toString('utf8'), 'Hello fixture attach');
+    assert.match(dl1.headers.get('content-type') || '', /text\/plain/);
+
+    const reply = await jsonFetch(baseUrl, 'POST', `/api/v1/tickets/${ticketId}/reply`, {
+      token,
+      body: {
+        message: 'Reply with file.',
+        attachments: [
+          { name: 'reply.txt', type: 'text/plain', data: replyTxtDataUrl },
+        ],
+      },
+    });
+    assert.equal(reply.status, 201, reply.text);
+
+    const list2 = await jsonFetch(baseUrl, 'GET', `/api/v1/tickets/${ticketId}/attachments`, {
+      token,
+    });
+    assert.equal(list2.status, 200, list2.text);
+    const replyFile = list2.json.data.find((a) => a.name === 'reply.txt');
+    assert.ok(replyFile, 'reply attachment listed');
+
+    const dl2 = await fetch(
+      `${baseUrl}/api/v1/tickets/${ticketId}/attachments/${replyFile.file_id}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    assert.equal(dl2.status, 200, await dl2.clone().text());
+    const bytes2 = Buffer.from(await dl2.arrayBuffer());
+    assert.equal(bytes2.toString('utf8'), 'Reply attachment body');
+  });
+
+  test('download without auth → 401; non-owner user → 403', async (t) => {
+    if (skipIfNoFixture(t)) return;
+
+    const login = await jsonFetch(baseUrl, 'POST', '/api/v1/auth/login', {
+      body: { username: 'customer', password: 'password123', type: 'user' },
+    });
+    assert.equal(login.status, 200, login.text);
+    const ownerToken = login.json.token;
+
+    const create = await jsonFetch(baseUrl, 'POST', '/api/v1/tickets', {
+      token: ownerToken,
+      body: {
+        topic_id: 1,
+        subject: 'Authz attach ticket',
+        message: 'Protected file',
+        attachments: [
+          { name: 'secret.txt', type: 'text/plain', data: hiTxtDataUrl },
+        ],
+      },
+    });
+    assert.equal(create.status, 201, create.text);
+    const ticketId = create.json.data.ticket_id;
+
+    const list = await jsonFetch(baseUrl, 'GET', `/api/v1/tickets/${ticketId}/attachments`, {
+      token: ownerToken,
+    });
+    assert.equal(list.status, 200, list.text);
+    const file = (list.json.data || []).find((a) => a.name === 'secret.txt');
+    assert.ok(file?.file_id, 'attachment present for authz test');
+    const path = `/api/v1/tickets/${ticketId}/attachments/${file.file_id}`;
+
+    // Unauthenticated
+    const noAuth = await fetch(`${baseUrl}${path}`);
+    assert.equal(noAuth.status, 401, await noAuth.text());
+
+    // Valid access JWT for a different user_id (not the ticket owner)
+    const { signAccessToken } = require('../../src/lib/tokens');
+    const otherToken = signAccessToken({ id: 99999, type: 'user', username: 'stranger' });
+    const denied = await fetch(`${baseUrl}${path}`, {
+      headers: { Authorization: `Bearer ${otherToken}` },
+    });
+    assert.equal(denied.status, 403, await denied.text());
+  });
+});
+
 describe('fixture HTTP: purpose token isolation', () => {
   test('password-reset JWT cannot call /auth/me', async (t) => {
     if (skipIfNoFixture(t)) return;
