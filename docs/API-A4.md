@@ -2,6 +2,8 @@
 
 Base path: `/api/v1`. Auth: Bearer JWT or session cookie (staff/user as noted).
 
+**Full contract:** [`docs/openapi.json`](./openapi.json) — regenerate with `npm run openapi:generate` after route changes.
+
 ## Tickets
 
 ### Create (user or staff on behalf)

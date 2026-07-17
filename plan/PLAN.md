@@ -736,6 +736,7 @@ This PLAN incorporates both: CODEX order, GROK product completeness after A4.
 | 2026-07-17 | **Soft ticket locks (stock semantics):** `lib/ticketLocks.js` — mode from `ticket_lock` (0/1/2) + `autolock_minutes`; acquire/renew/release on `lock` + `ticket.lock_id`; soft-touch on staff write paths (never blocks); admin banner; API `GET/POST .../lock` + release; cron `LockCleanup`; settings for mode/minutes. Policy: soft warn, on-first-edit (activity). Tests: `test/ticket.locks.test.js`. |
 | 2026-07-17 | **Redis sessions as optional peers:** `redis` + `connect-redis` in `peerDependencies` with `peerDependenciesMeta.optional`; MemoryStore remains default. `lib/sessionStore.js` loads peers only when `SESSION_STORE=redis` + `REDIS_URL`; clear fallback warnings. Docs in PRODUCTION.md / README. |
 | 2026-07-17 | **Browser E2E policy (deferred):** Smoke = default (Chromium critical customer paths; optional axe). Full matrix = optional (Firefox/WebKit, viewports, admin). No Playwright suite yet; HTTP fixture stays primary gate. |
+| 2026-07-17 | **OpenAPI regen:** `scripts/generate-openapi.js` + `npm run openapi:generate` → `docs/openapi.json` (OpenAPI 3.0.3, v matching package). Native `/api/v1` paths (auth, tickets+attachments+locks, users, staff, depts, teams, orgs, topics, SLA, FAQ CRUD, tasks write, roles, settings, templates, canned, filters, system) + official FOSS `/api/tickets.json|.xml|.email` and `/api/tasks/cron`. |
 
 ---
 

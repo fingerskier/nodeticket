@@ -16,7 +16,8 @@
     "fixture:up": "docker compose -f docker-compose.fixture.yml up -d",
     "fixture:down": "docker compose -f docker-compose.fixture.yml down",
     "fixture:bootstrap": "node scripts/fixture-bootstrap.js",
-    "fixture:reset": "npm run fixture:up && node scripts/fixture-bootstrap.js"
+    "fixture:reset": "npm run fixture:up && node scripts/fixture-bootstrap.js",
+    "openapi:generate": "node scripts/generate-openapi.js"
   },
   "keywords": [
     "helpdesk",

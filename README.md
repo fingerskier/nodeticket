@@ -12,7 +12,7 @@ npm start              # http://localhost:3000
 
 - **Customer portal:** `/` (SPA)
 - **Staff admin:** `/admin` (session login as staff)
-- **Native API:** `/api/v1/*`
+- **Native API:** `/api/v1/*` — contract: [`docs/openapi.json`](docs/openapi.json) (`npm run openapi:generate`)
 - **Official FOSS API:** `/api/tickets.json`, `/api/tickets.xml`, `/api/tickets.email`, `/api/tasks/cron`
 
 ## Development
