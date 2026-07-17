@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  # Optional: enable when fixture secrets/services are configured on the runner.
+  # http-fixture:
+  #   name: HTTP fixture
+  #   runs-on: ubuntu-latest
+  #   services:
+  #     mysql:
+  #       image: mysql:8.0
+  #       env:
+  #         MYSQL_ROOT_PASSWORD: root
+  #         MYSQL_DATABASE: osticket
+  #         MYSQL_USER: osticket
+  #         MYSQL_PASSWORD: osticket
+  #       ports: ['3307:3306']
+  #       options: >-
+  #         --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+  #         --health-interval=5s
+  #         --health-timeout=5s
+  #         --health-retries=20
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-node@v4
+  #       with:
+  #         node-version: '20'
+  #         cache: npm
+  #     - run: npm ci
+  #     - run: npm run fixture:bootstrap
+  #       env:
+  #         FIXTURE_HOST: 127.0.0.1
+  #         FIXTURE_PORT: 3307
+  #         FIXTURE_USER: root
+  #         FIXTURE_PASSWORD: root
+  #         FIXTURE_DATABASE: osticket
+  #     - run: npm run test:http

@@ -2600,49 +2600,333 @@ router.post('/filters/:id/delete', requireAdminSession, asyncHandler(async (req,
 }));
 
 /**
- * FAQ list
+ * FAQ list + search (U4)
  */
 router.get('/faq', asyncHandler(async (req, res) => {
   const base = await getAdminData(req);
+  const search = (req.query.search || '').toString().trim();
+  const status = (req.query.status || '').toString();
+  const flash = req.query.msg ? `<div class="alert alert-success" role="status">${escapeHtml(req.query.msg)}</div>` : '';
+  const errFlash = req.query.error ? `<div class="alert alert-danger" role="alert">${escapeHtml(req.query.error)}</div>` : '';
 
   let faqHtml = '<p>No FAQ articles found.</p>';
 
   try {
-    const faqs = await db.query(`
+    let sql = `
       SELECT f.*, c.name as category_name
       FROM ${db.table('faq')} f
       LEFT JOIN ${db.table('faq_category')} c ON f.category_id = c.category_id
-      ORDER BY c.name, f.question
-    `);
+      WHERE 1=1
+    `;
+    const params = [];
+    if (search) {
+      sql += ` AND (f.question LIKE ? OR f.answer LIKE ? OR f.keywords LIKE ?)`;
+      const term = `%${search}%`;
+      params.push(term, term, term);
+    }
+    if (status === 'published') {
+      sql += ` AND f.ispublished = 1`;
+    } else if (status === 'draft') {
+      sql += ` AND f.ispublished = 0`;
+    }
+    sql += ` ORDER BY c.name, f.question LIMIT 200`;
+
+    const faqs = await db.query(sql, params);
+
+    const filters = `
+      <form method="GET" action="/admin/faq" class="filter-form ticket-filters" role="search">
+        <input type="search" name="search" value="${escapeHtml(search)}" placeholder="Search question, answer, keywords…">
+        <select name="status" aria-label="Status">
+          <option value="" ${!status ? 'selected' : ''}>All</option>
+          <option value="published" ${status === 'published' ? 'selected' : ''}>Published</option>
+          <option value="draft" ${status === 'draft' ? 'selected' : ''}>Draft</option>
+        </select>
+        <button type="submit" class="btn btn-primary">Search</button>
+        ${search || status ? '<a href="/admin/faq" class="btn">Clear</a>' : ''}
+      </form>
+      <p style="margin:12px 0"><a href="/admin/faq/create" class="btn btn-success">+ New FAQ</a>
+        <a href="/admin/faq/categories" class="btn">Categories</a></p>
+    `;
 
     if (faqs.length > 0) {
       faqHtml = `
+        ${filters}
         <table class="data-table">
           <thead>
             <tr>
               <th>Question</th>
               <th>Category</th>
               <th>Status</th>
+              <th>Updated</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             ${faqs.map(f => `
               <tr>
-                <td>${escapeHtml(f.question)}</td>
+                <td><a href="/admin/faq/${f.faq_id}/edit">${escapeHtml(f.question)}</a></td>
                 <td>${escapeHtml(f.category_name || 'Uncategorized')}</td>
                 <td>${f.ispublished ? '<span class="badge badge-success">Published</span>' : '<span class="badge badge-warning">Draft</span>'}</td>
+                <td>${formatDate(f.updated)}</td>
+                <td>
+                  <a href="/admin/faq/${f.faq_id}/edit" class="btn btn-sm">Edit</a>
+                </td>
               </tr>
             `).join('')}
           </tbody>
         </table>
+        <p class="text-muted">${faqs.length} article${faqs.length === 1 ? '' : 's'}${faqs.length >= 200 ? ' (showing first 200)' : ''}</p>
       `;
+    } else {
+      faqHtml = `${filters}<p>No FAQ articles match.</p>`;
     }
   } catch (e) {
     console.error('Error loading FAQs:', e);
     faqHtml = '<p class="error">Error loading FAQ articles.</p>';
   }
 
-  res.send(renderAdminPage('FAQ Articles', faqHtml, base, 'faq'));
+  res.send(renderAdminPage('FAQ Articles', `${flash}${errFlash}${faqHtml}`, base, 'faq'));
+}));
+
+/**
+ * FAQ create/edit form
+ */
+router.get('/faq/create', asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const categories = await db.query(
+    `SELECT category_id, name FROM ${db.table('faq_category')} ORDER BY name`
+  ).catch(() => []);
+  const catOpts = categories.map((c) =>
+    `<option value="${c.category_id}">${escapeHtml(c.name)}</option>`
+  ).join('');
+  const content = `
+    <h2>New FAQ Article</h2>
+    <form method="POST" action="/admin/faq/create" class="ops-form" style="max-width:720px">
+      <input type="hidden" name="_csrf" value="${base.csrfToken || ''}">
+      <div class="form-group">
+        <label for="question">Question *</label>
+        <input type="text" id="question" name="question" required maxlength="255">
+      </div>
+      <div class="form-group">
+        <label for="answer">Answer *</label>
+        <textarea id="answer" name="answer" rows="10" required></textarea>
+      </div>
+      <div class="form-group">
+        <label for="category_id">Category</label>
+        <select id="category_id" name="category_id">
+          <option value="0">Uncategorized</option>
+          ${catOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="keywords">Keywords</label>
+        <input type="text" id="keywords" name="keywords" placeholder="comma-separated">
+      </div>
+      <div class="form-group">
+        <label><input type="checkbox" name="ispublished" value="1" checked> Published</label>
+      </div>
+      <div class="form-group">
+        <label for="notes">Internal notes</label>
+        <textarea id="notes" name="notes" rows="3"></textarea>
+      </div>
+      <button type="submit" class="btn btn-primary">Create</button>
+      <a href="/admin/faq" class="btn">Cancel</a>
+    </form>
+  `;
+  res.send(renderAdminPage('New FAQ', content, base, 'faq'));
+}));
+
+router.post('/faq/create', asyncHandler(async (req, res) => {
+  const question = (req.body.question || '').trim();
+  const answer = (req.body.answer || '').trim();
+  if (!question || !answer) {
+    return res.redirect(`/admin/faq/create?error=${encodeURIComponent('Question and answer are required')}`);
+  }
+  const now = new Date();
+  try {
+    await db.query(
+      `INSERT INTO ${db.table('faq')}
+        (category_id, ispublished, question, answer, keywords, notes, created, updated)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        parseInt(req.body.category_id, 10) || 0,
+        req.body.ispublished ? 1 : 0,
+        question.substring(0, 255),
+        answer,
+        (req.body.keywords || '').trim() || null,
+        (req.body.notes || '').trim() || null,
+        now,
+        now,
+      ]
+    );
+    res.redirect(`/admin/faq?msg=${encodeURIComponent('FAQ created')}`);
+  } catch (e) {
+    console.error('FAQ create failed:', e);
+    const msg = /Duplicate|unique/i.test(e.message || '')
+      ? 'An FAQ with that question already exists'
+      : (e.message || 'Create failed');
+    res.redirect(`/admin/faq?error=${encodeURIComponent(msg)}`);
+  }
+}));
+
+router.get('/faq/:id/edit', asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const { id } = req.params;
+  const faq = await db.queryOne(`SELECT * FROM ${db.table('faq')} WHERE faq_id = ?`, [id]);
+  if (!faq) {
+    return res.redirect(`/admin/faq?error=${encodeURIComponent('FAQ not found')}`);
+  }
+  const categories = await db.query(
+    `SELECT category_id, name FROM ${db.table('faq_category')} ORDER BY name`
+  ).catch(() => []);
+  const catOpts = categories.map((c) =>
+    `<option value="${c.category_id}" ${Number(c.category_id) === Number(faq.category_id) ? 'selected' : ''}>${escapeHtml(c.name)}</option>`
+  ).join('');
+  const content = `
+    <h2>Edit FAQ</h2>
+    <form method="POST" action="/admin/faq/${id}/update" class="ops-form" style="max-width:720px">
+      <input type="hidden" name="_csrf" value="${base.csrfToken || ''}">
+      <div class="form-group">
+        <label for="question">Question *</label>
+        <input type="text" id="question" name="question" required maxlength="255" value="${escapeHtml(faq.question)}">
+      </div>
+      <div class="form-group">
+        <label for="answer">Answer *</label>
+        <textarea id="answer" name="answer" rows="10" required>${escapeHtml(faq.answer)}</textarea>
+      </div>
+      <div class="form-group">
+        <label for="category_id">Category</label>
+        <select id="category_id" name="category_id">
+          <option value="0" ${!faq.category_id ? 'selected' : ''}>Uncategorized</option>
+          ${catOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="keywords">Keywords</label>
+        <input type="text" id="keywords" name="keywords" value="${escapeHtml(faq.keywords || '')}">
+      </div>
+      <div class="form-group">
+        <label><input type="checkbox" name="ispublished" value="1" ${faq.ispublished ? 'checked' : ''}> Published</label>
+      </div>
+      <div class="form-group">
+        <label for="notes">Internal notes</label>
+        <textarea id="notes" name="notes" rows="3">${escapeHtml(faq.notes || '')}</textarea>
+      </div>
+      <button type="submit" class="btn btn-primary">Save</button>
+      <a href="/admin/faq" class="btn">Cancel</a>
+    </form>
+    <form method="POST" action="/admin/faq/${id}/delete" style="margin-top:24px;max-width:720px"
+      onsubmit="return confirm('Delete this FAQ article permanently?');">
+      <input type="hidden" name="_csrf" value="${base.csrfToken || ''}">
+      <button type="submit" class="btn btn-danger">Delete FAQ</button>
+    </form>
+  `;
+  res.send(renderAdminPage('Edit FAQ', content, base, 'faq'));
+}));
+
+router.post('/faq/:id/update', asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const question = (req.body.question || '').trim();
+  const answer = (req.body.answer || '').trim();
+  if (!question || !answer) {
+    return res.redirect(`/admin/faq/${id}/edit?error=${encodeURIComponent('Question and answer are required')}`);
+  }
+  try {
+    await db.query(
+      `UPDATE ${db.table('faq')}
+       SET category_id = ?, ispublished = ?, question = ?, answer = ?, keywords = ?, notes = ?, updated = ?
+       WHERE faq_id = ?`,
+      [
+        parseInt(req.body.category_id, 10) || 0,
+        req.body.ispublished ? 1 : 0,
+        question.substring(0, 255),
+        answer,
+        (req.body.keywords || '').trim() || null,
+        (req.body.notes || '').trim() || null,
+        new Date(),
+        id,
+      ]
+    );
+    res.redirect(`/admin/faq?msg=${encodeURIComponent('FAQ updated')}`);
+  } catch (e) {
+    console.error('FAQ update failed:', e);
+    res.redirect(`/admin/faq?error=${encodeURIComponent(e.message || 'Update failed')}`);
+  }
+}));
+
+router.post('/faq/:id/delete', asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  try {
+    try {
+      await db.query(`DELETE FROM ${db.table('faq_topic')} WHERE faq_id = ?`, [id]);
+    } catch { /* optional table */ }
+    await db.query(`DELETE FROM ${db.table('faq')} WHERE faq_id = ?`, [id]);
+    res.redirect(`/admin/faq?msg=${encodeURIComponent('FAQ deleted')}`);
+  } catch (e) {
+    console.error('FAQ delete failed:', e);
+    res.redirect(`/admin/faq?error=${encodeURIComponent(e.message || 'Delete failed')}`);
+  }
+}));
+
+/**
+ * FAQ categories (minimal create)
+ */
+router.get('/faq/categories', asyncHandler(async (req, res) => {
+  const base = await getAdminData(req);
+  const flash = req.query.msg ? `<div class="alert alert-success">${escapeHtml(req.query.msg)}</div>` : '';
+  const cats = await db.query(
+    `SELECT c.*,
+      (SELECT COUNT(*) FROM ${db.table('faq')} f WHERE f.category_id = c.category_id) as faq_count
+     FROM ${db.table('faq_category')} c ORDER BY c.name`
+  ).catch(() => []);
+  const content = `
+    ${flash}
+    <h2>FAQ Categories</h2>
+    <p><a href="/admin/faq" class="btn">&larr; Back to FAQ</a></p>
+    <form method="POST" action="/admin/faq/categories" class="ops-form" style="max-width:480px;margin-bottom:24px">
+      <input type="hidden" name="_csrf" value="${base.csrfToken || ''}">
+      <h4>Add category</h4>
+      <div class="form-group">
+        <label for="name">Name *</label>
+        <input type="text" id="name" name="name" required maxlength="125">
+      </div>
+      <div class="form-group">
+        <label><input type="checkbox" name="ispublic" value="1" checked> Public</label>
+      </div>
+      <button type="submit" class="btn btn-primary">Create category</button>
+    </form>
+    <table class="data-table">
+      <thead><tr><th>Name</th><th>Public</th><th>Articles</th></tr></thead>
+      <tbody>
+        ${cats.length ? cats.map((c) => `
+          <tr>
+            <td>${escapeHtml(c.name)}</td>
+            <td>${c.ispublic ? 'Yes' : 'No'}</td>
+            <td>${parseInt(c.faq_count || 0, 10)}</td>
+          </tr>
+        `).join('') : '<tr><td colspan="3">No categories yet.</td></tr>'}
+      </tbody>
+    </table>
+  `;
+  res.send(renderAdminPage('FAQ Categories', content, base, 'faq'));
+}));
+
+router.post('/faq/categories', asyncHandler(async (req, res) => {
+  const name = (req.body.name || '').trim();
+  if (!name) return res.redirect('/admin/faq/categories');
+  const now = new Date();
+  try {
+    await db.query(
+      `INSERT INTO ${db.table('faq_category')}
+        (category_pid, ispublic, name, description, notes, created, updated)
+       VALUES (NULL, ?, ?, '', '', ?, ?)`,
+      [req.body.ispublic ? 1 : 0, name.substring(0, 125), now, now]
+    );
+    res.redirect(`/admin/faq/categories?msg=${encodeURIComponent('Category created')}`);
+  } catch (e) {
+    console.error('FAQ category create failed:', e);
+    res.redirect(`/admin/faq?error=${encodeURIComponent(e.message || 'Category create failed')}`);
+  }
 }));
 
 function getEntryPoster(entry) {

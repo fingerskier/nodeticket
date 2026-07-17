@@ -26,15 +26,18 @@ const list = async (req, res) => {
   const { category_id, search } = req.query;
   const conn = getSdk().connection;
 
+  const isStaff = req.auth?.type === 'staff';
   let sql = `
     SELECT f.*, c.name as category_name
     FROM ${conn.table('faq')} f
     LEFT JOIN ${conn.table('faq_category')} c ON f.category_id = c.category_id
-    WHERE f.ispublished = 1
+    WHERE 1=1
   `;
   const params = [];
 
-  if (!req.auth || req.auth.type === 'user') {
+  // Public/customer: published only; staff may list drafts
+  if (!isStaff) {
+    sql += ` AND f.ispublished = 1`;
     sql += ` AND (c.ispublic = 1 OR c.category_id IS NULL)`;
   }
 

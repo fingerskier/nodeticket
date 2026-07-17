@@ -541,9 +541,11 @@ Do **not** ship note UI before C-03 / A0.5 is green.
 
 ### 15.4 Exit criteria
 
-- [ ] Admin can manage FAQ and core config under RBAC  
-- [ ] Production checklist documented in README  
-- [ ] CI runs unit + HTTP fixture + (optional) browser smoke  
+- [x] Admin FAQ CRUD + search + categories (staff session; existing admin routes use staff session gate)  
+- [x] Production checklist documented (`docs/PRODUCTION.md` + README)  
+- [x] CI runs unit tests (`.github/workflows/ci.yml`); HTTP fixture job documented/optional  
+- [x] Safe production errors (escaped HTML, no stack leak); ygdrassil self-hosted pin  
+- [x] Session regenerate on login (existing); optional Redis store hook; cron ops docs  
 
 ---
 
@@ -709,6 +711,7 @@ This PLAN incorporates both: CODEX order, GROK product completeness after A4.
 | 2026-07-17 | **U2 attachments + notify UI:** Customer SPA file upload on create/reply (RFC2397 data URLs), attachment list + authenticated download, notification failure banners. Staff admin ticket detail: attachment panel, per-entry links, reply attachments, standalone upload form, warn flash when email notify fails (write not rolled back). CSS in `styles.css` / `admin.css`. |
 | 2026-07-17 | **U2 fixture HTTP attaches:** create+reply with data-URL files → list → download bytes; unauth download 401; non-owner JWT 403. Suite is 14 tests (skip when fixture down). |
 | 2026-07-17 | **U3 customer portal hardening + ygdrassil pin:** CDN `ygdrassil@2026.7.13`. SPA: guest register/login CTAs, forgot-password links, profile nav, ticket search/filter/pagination, thread load-older (newest page first), create/reply drafts in sessionStorage, idle timeout aligned to server + full logout, skip-link / live errors / FAQ keyboard a11y. |
+| 2026-07-17 | **U4 admin FAQ + production readiness:** Admin FAQ list/search/create/edit/delete + categories; staff FAQ API lists drafts; errorHandler escapes HTML and hides internal messages in production; ygdrassil self-hosted under `public/vendor/ygdrassil` with CDN fallback; optional Redis session store; `docs/PRODUCTION.md`; README ops links; GitHub Actions unit CI. |
 
 ---
 

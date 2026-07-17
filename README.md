@@ -1,29 +1,56 @@
 # nodeticket
 
-**Node.js server that interoperates with existing osTicket v1.8+ databases**
+**Node.js help desk that interoperates with existing osTicket v1.8+ MySQL databases.**
 
+## Quick start
 
-## Core Concepts
+```bash
+cp .env.example .env   # if present; otherwise set env vars (see docs/PRODUCTION.md)
+npm install
+npm start              # http://localhost:3000
+```
+
+- **Customer portal:** `/` (SPA)
+- **Staff admin:** `/admin` (session login as staff)
+- **Native API:** `/api/v1/*`
+- **Official FOSS API:** `/api/tickets.json`, `/api/tickets.xml`, `/api/tickets.email`, `/api/tasks/cron`
+
+## Development
+
+```bash
+npm run dev            # watch mode
+npm test               # unit tests
+npm run fixture:up     # Docker MySQL on :3307
+npm run fixture:bootstrap
+npm run test:http      # HTTP integration (skips if fixture down)
+```
+
+See [docs/FIXTURE.md](docs/FIXTURE.md) and the master plan in [plan/PLAN.md](plan/PLAN.md).
+
+## Production
+
+See **[docs/PRODUCTION.md](docs/PRODUCTION.md)** for:
+
+- Required secrets (`SESSION_SECRET`, `JWT_SECRET`, MySQL)
+- Session regeneration / logout / CSRF / idle policy
+- Optional Redis session store for multi-instance
+- External cron → `POST /api/tasks/cron`
+- Self-hosted ygdrassil pin and safe error behavior
+- Deploy smoke checklist
+
+## Core concepts
 
 ### Actors
 * Customers
 * Staff
-* Agents
-  * the silent bureaucrats who enforce rules and route work
-  * could be algorithmic or intelligent
+* Agents (rules, routing)
 * Administrators
-  * define and configure the system
 
 ### Actions
-* create ticket
-* classify & categorize a ticket
-* assign a ticket
-* communicate
-  * add external/internal messages
-  * change the status of a ticket
-* close a ticket
+* create / classify / assign tickets
+* public replies and internal notes
+* close / reopen
+* attachments and outbound notifications
 
-### Entities 
-* Tickets
-* Users
-* Messages
+### Entities
+* Tickets, users, staff, departments, topics, FAQ, SLA, filters

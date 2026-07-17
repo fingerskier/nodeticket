@@ -2,10 +2,25 @@
  * Error Handling Middleware
  *
  * Centralized error handling for the application.
+ * Production: never leak stack traces or raw internal messages for non-operational errors.
  */
 
 const config = require('../config');
 const { ValidationError, NotFoundError, ConflictError, NodeticketError } = require('../sdk/errors');
+
+/**
+ * Escape text for safe HTML error pages.
+ * @param {string} str
+ */
+function escapeHtml(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 /**
  * Custom error class for API errors
@@ -58,8 +73,10 @@ const notFoundHandler = (req, res, next) => {
   // For HTML routes, render 404 page
   res.status(404).send(`
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>404 - Page Not Found</title>
       <style>
         body { font-family: -apple-system, sans-serif; margin: 40px; }
@@ -78,6 +95,23 @@ const notFoundHandler = (req, res, next) => {
 };
 
 /**
+ * Safe client-facing message (no internal leak in production).
+ */
+function publicErrorMessage(err, status) {
+  if (err.isOperational && err.message) {
+    return err.message;
+  }
+  if (config.env === 'development' && err.message) {
+    return err.message;
+  }
+  if (status === 404) return 'Resource not found';
+  if (status === 401) return 'Authentication required';
+  if (status === 403) return 'Access denied';
+  if (status === 400) return 'Bad request';
+  return 'An unexpected error occurred';
+}
+
+/**
  * Global error handler
  */
 const errorHandler = (err, req, res, next) => {
@@ -92,32 +126,33 @@ const errorHandler = (err, req, res, next) => {
     err = new ApiError(500, err.message);
   }
 
-  // Log error in development
+  // Always log server-side (message + stack for unexpected)
   if (config.env === 'development') {
     console.error('Error:', err);
-  } else {
-    // In production, only log server errors
-    if (!err.isOperational) {
-      console.error('Unhandled error:', err);
-    }
+  } else if (!err.isOperational || (err.status || 500) >= 500) {
+    console.error('Server error:', {
+      message: err.message,
+      status: err.status,
+      path: req.path,
+      stack: err.stack,
+    });
   }
 
-  // Determine status code
   const status = err.status || 500;
+  const message = publicErrorMessage(err, status);
 
   // For API routes, return JSON
   if (req.path.startsWith('/api/')) {
     const response = {
       success: false,
-      message: err.message || 'An error occurred'
+      message,
     };
 
-    // Include errors object for validation errors
     if (err.errors) {
       response.errors = err.errors;
     }
 
-    // Include stack trace in development
+    // Stack only in development for non-operational errors
     if (config.env === 'development' && !err.isOperational) {
       response.stack = err.stack;
     }
@@ -125,11 +160,18 @@ const errorHandler = (err, req, res, next) => {
     return res.status(status).json(response);
   }
 
-  // For HTML routes, render error page
+  // For HTML routes, render escaped error page (no raw HTML injection)
+  const safeMessage = escapeHtml(message);
+  const stackBlock = (config.env === 'development' && err.stack)
+    ? `<pre>${escapeHtml(err.stack)}</pre>`
+    : '';
+
   const errorHtml = `
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>Error - ${status}</title>
       <style>
         body { font-family: -apple-system, sans-serif; margin: 40px; }
@@ -141,8 +183,8 @@ const errorHandler = (err, req, res, next) => {
     </head>
     <body>
       <h1>Error ${status}</h1>
-      <p>${err.message || 'An error occurred'}</p>
-      ${config.env === 'development' ? `<pre>${err.stack}</pre>` : ''}
+      <p>${safeMessage}</p>
+      ${stackBlock}
       <a href="/">Return to Home</a>
     </body>
     </html>
@@ -164,5 +206,6 @@ module.exports = {
   ApiError,
   notFoundHandler,
   errorHandler,
-  asyncHandler
+  asyncHandler,
+  escapeHtml,
 };

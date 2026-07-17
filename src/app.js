@@ -52,6 +52,7 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
+      // Self-hosted ygdrassil under /vendor; CDN kept as optional fallback
       scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
       imgSrc: ["'self'", "data:", "https:"],
       connectSrc: ["'self'", "https://cdn.jsdelivr.net"],
@@ -66,7 +67,9 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Session middleware
-app.use(session({
+// Default: MemoryStore (single process). For multi-instance production, set
+// SESSION_STORE=redis and REDIS_URL (see docs/PRODUCTION.md).
+const sessionOptions = {
   secret: config.session.secret,
   name: config.session.name,
   resave: false,
@@ -77,7 +80,35 @@ app.use(session({
     sameSite: 'lax',
     maxAge: config.session.maxAge
   }
-}));
+};
+
+if (process.env.SESSION_STORE === 'redis' && process.env.REDIS_URL) {
+  try {
+    // Optional dependency — only required when SESSION_STORE=redis
+    // eslint-disable-next-line import/no-extraneous-dependencies, global-require
+    const RedisStore = require('connect-redis').default
+      || require('connect-redis');
+    // eslint-disable-next-line global-require
+    const { createClient } = require('redis');
+    const redisClient = createClient({ url: process.env.REDIS_URL });
+    redisClient.connect().catch((err) => {
+      console.error('Redis session store connect failed:', err.message);
+    });
+    const StoreCtor = RedisStore.default || RedisStore;
+    sessionOptions.store = new StoreCtor({
+      client: redisClient,
+      prefix: 'nt:sess:',
+    });
+    console.log('Session store: redis');
+  } catch (err) {
+    console.warn(
+      'SESSION_STORE=redis requested but connect-redis/redis not installed; using MemoryStore.',
+      err.message
+    );
+  }
+}
+
+app.use(session(sessionOptions));
 
 // Cookie parser (needed for CSRF double-submit cookie)
 app.use(cookieParser());

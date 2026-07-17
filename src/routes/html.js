@@ -84,12 +84,19 @@ const renderSPA = (base) => `
     };
   </script>
 
-  <!-- Ygdrassil State Machine (vanilla) — pin version for production -->
+  <!-- Ygdrassil State Machine (vanilla) — self-hosted pin 2026.7.13; CDN fallback -->
   <script type="module">
-    import { StateMachine } from 'https://cdn.jsdelivr.net/npm/ygdrassil@2026.7.13/vanilla/StateMachine.js';
-    window.StateMachine = StateMachine;
-
-    // Load the SPA application after StateMachine is available
+    async function loadStateMachine() {
+      try {
+        const mod = await import('/vendor/ygdrassil/StateMachine.js');
+        return mod.StateMachine;
+      } catch (err) {
+        console.warn('Local ygdrassil failed, trying CDN', err);
+        const mod = await import('https://cdn.jsdelivr.net/npm/ygdrassil@2026.7.13/vanilla/StateMachine.js');
+        return mod.StateMachine;
+      }
+    }
+    window.StateMachine = await loadStateMachine();
     const script = document.createElement('script');
     script.src = '/js/spa.js';
     document.body.appendChild(script);
