@@ -51,37 +51,31 @@ const createConnection = async (options = {}) => {
     throw new ConnectionError('database is required');
   }
 
-  let pool;
+  // Fail fast: PostgreSQL is not implemented for osTicket SQL dialect (A4.10)
+  const d = (dialect || 'mysql').toLowerCase();
+  if (d === 'postgres' || d === 'postgresql' || d === 'pg') {
+    throw new ConnectionError(
+      'PostgreSQL is not supported. Configure DB_DIALECT=mysql for osTicket-compatible databases.'
+    );
+  }
 
-  if (dialect === 'postgres') {
-    const { Pool } = require('pg');
-    pool = new Pool({ host, port, database, user, password, min: poolMin, max: poolMax });
+  const mysql = require('mysql2/promise');
+  const pool = mysql.createPool({
+    host,
+    port,
+    database,
+    user,
+    password,
+    waitForConnections: true,
+    connectionLimit: poolMax,
+    queueLimit: 0,
+  });
 
-    try {
-      const client = await pool.connect();
-      client.release();
-    } catch (err) {
-      throw new ConnectionError(`Failed to connect to PostgreSQL: ${err.message}`);
-    }
-  } else {
-    const mysql = require('mysql2/promise');
-    pool = mysql.createPool({
-      host,
-      port,
-      database,
-      user,
-      password,
-      waitForConnections: true,
-      connectionLimit: poolMax,
-      queueLimit: 0,
-    });
-
-    try {
-      const connection = await pool.getConnection();
-      connection.release();
-    } catch (err) {
-      throw new ConnectionError(`Failed to connect to MySQL: ${err.message}`);
-    }
+  try {
+    const connection = await pool.getConnection();
+    connection.release();
+  } catch (err) {
+    throw new ConnectionError(`Failed to connect to MySQL: ${err.message}`);
   }
 
   // ---- Query primitives ----

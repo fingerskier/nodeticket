@@ -186,8 +186,162 @@ const getThread = async (req, res) => {
   });
 };
 
+/**
+ * Create a task (staff)
+ */
+const create = async (req, res) => {
+  const conn = getSdk().connection;
+  const {
+    title,
+    description,
+    dept_id,
+    staff_id,
+    team_id,
+    object_id,
+    object_type,
+    duedate,
+    number,
+  } = req.body || {};
+
+  if (!title || !String(title).trim()) {
+    throw ApiError.badRequest('title is required');
+  }
+
+  const now = new Date();
+  const objType = object_type || 'T';
+  const objId = object_id != null ? parseInt(object_id, 10) : 0;
+
+  const result = await conn.query(`
+    INSERT INTO ${conn.table('task')}
+      (object_id, object_type, number, dept_id, staff_id, team_id, lock_id, flags, duedate, closed, created, updated)
+    VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, NULL, ?, ?)
+  `, [
+    objId || 0,
+    objType,
+    number || null,
+    dept_id || 0,
+    staff_id || 0,
+    team_id || 0,
+    duedate || null,
+    now,
+    now,
+  ]);
+
+  const taskId = result.insertId;
+
+  // Best-effort cdata (title/description)
+  try {
+    await conn.query(
+      `INSERT INTO ${conn.table('task__cdata')} (task_id, title, description) VALUES (?, ?, ?)`,
+      [taskId, String(title).trim().substring(0, 255), description || null]
+    );
+  } catch (err) {
+    // table may not exist until forms bootstrap
+    console.warn('task__cdata insert skipped:', err.message);
+  }
+
+  // Thread for task
+  try {
+    await conn.query(
+      `INSERT INTO ${conn.table('thread')} (object_id, object_type, created) VALUES (?, 'A', ?)`,
+      [taskId, now]
+    );
+  } catch (err) {
+    console.warn('task thread insert skipped:', err.message);
+  }
+
+  res.status(201).json({
+    success: true,
+    data: { id: taskId, title: String(title).trim(), created: now },
+  });
+};
+
+/**
+ * Update task assignment / due date
+ */
+const update = async (req, res) => {
+  const { id } = req.params;
+  const conn = getSdk().connection;
+  const existing = await conn.queryOne(
+    `SELECT id FROM ${conn.table('task')} WHERE id = ?`,
+    [id]
+  );
+  if (!existing) throw ApiError.notFound('Task not found');
+
+  const { staff_id, team_id, dept_id, duedate, title, description } = req.body || {};
+  const updates = [];
+  const params = [];
+
+  if (staff_id !== undefined) { updates.push('staff_id = ?'); params.push(staff_id); }
+  if (team_id !== undefined) { updates.push('team_id = ?'); params.push(team_id); }
+  if (dept_id !== undefined) { updates.push('dept_id = ?'); params.push(dept_id); }
+  if (duedate !== undefined) { updates.push('duedate = ?'); params.push(duedate); }
+
+  if (updates.length === 0 && title === undefined && description === undefined) {
+    throw ApiError.badRequest('No valid updates provided');
+  }
+
+  if (updates.length > 0) {
+    updates.push('updated = ?');
+    params.push(new Date());
+    params.push(id);
+    await conn.query(
+      `UPDATE ${conn.table('task')} SET ${updates.join(', ')} WHERE id = ?`,
+      params
+    );
+  }
+
+  if (title !== undefined || description !== undefined) {
+    try {
+      const row = await conn.queryOne(
+        `SELECT task_id FROM ${conn.table('task__cdata')} WHERE task_id = ?`,
+        [id]
+      );
+      if (row) {
+        const cUpdates = [];
+        const cParams = [];
+        if (title !== undefined) { cUpdates.push('title = ?'); cParams.push(title); }
+        if (description !== undefined) { cUpdates.push('description = ?'); cParams.push(description); }
+        cParams.push(id);
+        await conn.query(
+          `UPDATE ${conn.table('task__cdata')} SET ${cUpdates.join(', ')} WHERE task_id = ?`,
+          cParams
+        );
+      }
+    } catch (err) {
+      console.warn('task__cdata update skipped:', err.message);
+    }
+  }
+
+  res.json({ success: true, data: { id: parseInt(id, 10) } });
+};
+
+/**
+ * Close a task
+ */
+const close = async (req, res) => {
+  const { id } = req.params;
+  const conn = getSdk().connection;
+  const existing = await conn.queryOne(
+    `SELECT id, closed FROM ${conn.table('task')} WHERE id = ?`,
+    [id]
+  );
+  if (!existing) throw ApiError.notFound('Task not found');
+
+  const now = new Date();
+  await conn.query(
+    `UPDATE ${conn.table('task')} SET closed = ?, updated = ? WHERE id = ?`,
+    [now, now, id]
+  );
+
+  res.json({ success: true, data: { id: parseInt(id, 10), closed: now } });
+};
+
 module.exports = {
   list,
   get,
   getThread,
+  create,
+  update,
+  close,
 };

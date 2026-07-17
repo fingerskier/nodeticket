@@ -76,6 +76,15 @@ const config = {
 const validateConfig = () => {
   const errors = [];
 
+  // PostgreSQL is not a supported production dialect (A4.10)
+  const dialect = (config.db.dialect || 'mysql').toLowerCase();
+  if (dialect === 'postgres' || dialect === 'postgresql' || dialect === 'pg') {
+    errors.push(
+      'DB_DIALECT=postgres is not supported. Use mysql (osTicket schema). ' +
+      'PostgreSQL support was removed from the supported surface until a dedicated implementation exists.'
+    );
+  }
+
   if (config.env === 'production') {
     if (config.session.secret === 'nodeticket-secret-change-me') {
       errors.push('SESSION_SECRET must be set in production');

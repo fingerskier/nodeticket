@@ -37,8 +37,17 @@ router.get(
   asyncHandler(ticketController.getEvents)
 );
 
-// POST /api/v1/tickets - Create ticket
-router.post('/', authenticate, requireVerified, asyncHandler(ticketController.create));
+// POST /api/v1/tickets - Create ticket (user self-service or staff on behalf of user_id)
+// Users: requireVerified; staff: create-on-behalf
+router.post('/', authenticate, (req, res, next) => {
+  if (req.auth?.type === 'user') {
+    return requireVerified(req, res, next);
+  }
+  if (req.auth?.type === 'staff') {
+    return next();
+  }
+  return res.status(403).json({ success: false, message: 'Forbidden' });
+}, asyncHandler(ticketController.create));
 
 // PUT /api/v1/tickets/:id - Update ticket
 router.put(
@@ -54,6 +63,30 @@ router.post(
   authenticate,
   canAccessTicket,
   asyncHandler(ticketController.reply)
+);
+
+// GET /api/v1/tickets/:id/attachments
+router.get(
+  '/:id/attachments',
+  authenticate,
+  canAccessTicket,
+  asyncHandler(ticketController.listAttachments)
+);
+
+// GET /api/v1/tickets/:id/attachments/:fileId - download
+router.get(
+  '/:id/attachments/:fileId',
+  authenticate,
+  canAccessTicket,
+  asyncHandler(ticketController.downloadAttachment)
+);
+
+// POST /api/v1/tickets/:id/attachments - upload (JSON base64 / data-URL)
+router.post(
+  '/:id/attachments',
+  authenticate,
+  canAccessTicket,
+  asyncHandler(ticketController.uploadAttachments)
 );
 
 // POST /api/v1/tickets/:id/note - Add internal note (staff + permission)

@@ -70,35 +70,52 @@ const getEvents = async (req, res) => {
 
 /**
  * Create ticket
+ * - Users: create for themselves (requireVerified on route)
+ * - Staff: create on behalf of user_id (A4.4)
  */
 const create = async (req, res) => {
-  const userId = req.auth?.id;
+  const authId = req.auth?.id;
   const userType = req.auth?.type;
 
-  if (!userId || userType !== 'user') {
-    throw ApiError.forbidden('Only users can create tickets');
+  if (!authId || (userType !== 'user' && userType !== 'staff')) {
+    throw ApiError.forbidden('Authentication required');
+  }
+
+  let userId = authId;
+  let source = 'Web';
+  let allowPrivateTopic = false;
+
+  if (userType === 'staff') {
+    const onBehalf = req.body.user_id != null ? parseInt(req.body.user_id, 10) : null;
+    if (!onBehalf) {
+      throw ApiError.badRequest('Staff must provide user_id when creating a ticket on behalf of a user');
+    }
+    userId = onBehalf;
+    source = req.body.source || 'API';
+    allowPrivateTopic = true;
   }
 
   const sdk = getSdk();
   const conn = sdk.connection;
 
   // Load topic defaults so filter can see/override them
-  // Use flags/ispublic (osTicket v1.18) — not nonexistent isactive column
   const topic = await conn.queryOne(
     `SELECT ht.topic_id, ht.dept_id, ht.priority_id, ht.sla_id
      FROM ${conn.table('help_topic')} ht WHERE ht.topic_id = ?`,
     [req.body.topic_id]
   );
 
-  // Load user email for filter evaluation
-  let userEmail = req.auth?.email || '';
-  if (!userEmail) {
+  // Load owner email for filter evaluation + notifications
+  let userEmail = userType === 'user' ? (req.auth?.email || '') : '';
+  let userName = userType === 'user' ? (req.auth?.name || '') : '';
+  if (!userEmail || !userName) {
     const ue = await conn.queryOne(
-      `SELECT ue.address FROM ${conn.table('user')} u
+      `SELECT u.name, ue.address FROM ${conn.table('user')} u
        LEFT JOIN ${conn.table('user_email')} ue ON u.default_email_id = ue.id
        WHERE u.id = ?`, [userId]
     );
-    userEmail = ue?.address || '';
+    userEmail = userEmail || ue?.address || '';
+    userName = userName || ue?.name || '';
   }
 
   const ticketData = {
@@ -108,24 +125,27 @@ const create = async (req, res) => {
     dept_id: topic?.dept_id || 0,
     topic_id: req.body.topic_id,
     priority_id: topic?.priority_id || 0,
-    source: 'Web',
+    source,
   };
 
-  // Run filter engine — reject or collect field updates
   const filterResult = await applyFilters(ticketData);
   if (filterResult?._rejected) {
     throw ApiError.badRequest(filterResult._rejectMessage || 'Rejected by filter');
   }
+
+  const attachments = Array.isArray(req.body.attachments) ? req.body.attachments : [];
 
   const data = await sdk.tickets.create({
     userId,
     topicId: req.body.topic_id,
     subject: req.body.subject,
     body: req.body.message,
-    source: 'Web',
+    source,
+    allowPrivateTopic,
+    poster: userName || undefined,
+    attachments,
   });
 
-  // Apply any non-reject filter field updates (only known ticket columns)
   const allowedFilterCols = new Set([
     'dept_id', 'topic_id', 'sla_id', 'staff_id', 'team_id', 'status_id', 'duedate', 'isoverdue',
   ]);
@@ -143,7 +163,25 @@ const create = async (req, res) => {
     await db.query(`UPDATE ${db.table('ticket')} SET ${cols.join(', ')}, updated = NOW() WHERE ticket_id = ?`, args);
   }
 
-  res.status(201).json({ success: true, message: 'Ticket created successfully', data });
+  // Outbound auto-response (best-effort)
+  let notification = null;
+  try {
+    const { notifyTicketCreated } = require('../lib/ticketNotifications');
+    notification = await notifyTicketCreated(conn, {
+      ticket: { ...data, subject: req.body.subject },
+      userEmail,
+      userName,
+    });
+  } catch (err) {
+    notification = { sent: false, reason: err.message };
+  }
+
+  res.status(201).json({
+    success: true,
+    message: 'Ticket created successfully',
+    data,
+    notification,
+  });
 };
 
 /**
@@ -220,11 +258,12 @@ const update = async (req, res) => {
  */
 const reply = async (req, res) => {
   const { id } = req.params;
-  const { message, format } = req.body;
+  const { message, format, attachments } = req.body;
   const isStaff = req.auth?.type === 'staff';
   const poster = req.auth?.name || req.auth?.username || (isStaff ? 'Staff' : 'User');
+  const sdk = getSdk();
 
-  const data = await getSdk().tickets.reply(id, {
+  const data = await sdk.tickets.reply(id, {
     staffId: isStaff ? req.auth.id : null,
     userId: !isStaff ? req.auth?.id : null,
     body: message,
@@ -233,7 +272,76 @@ const reply = async (req, res) => {
     source: 'API',
   });
 
-  res.status(201).json({ success: true, message: 'Reply added', data });
+  if (Array.isArray(attachments) && attachments.length > 0) {
+    await sdk.tickets.addAttachments(id, { attachments, entryId: data.id });
+  }
+
+  // Notify customer on staff reply (best-effort)
+  let notification = null;
+  try {
+    const conn = sdk.connection;
+    const owner = await conn.queryOne(
+      `SELECT u.name, ue.address as email, t.number, tc.subject
+       FROM ${conn.table('ticket')} t
+       JOIN ${conn.table('user')} u ON u.id = t.user_id
+       LEFT JOIN ${conn.table('user_email')} ue ON u.default_email_id = ue.id
+       LEFT JOIN ${conn.table('ticket__cdata')} tc ON tc.ticket_id = t.ticket_id
+       WHERE t.ticket_id = ?`,
+      [id]
+    );
+    if (owner) {
+      const { notifyTicketReply } = require('../lib/ticketNotifications');
+      notification = await notifyTicketReply(conn, {
+        ticket: {
+          ticket_id: id,
+          number: owner.number,
+          subject: owner.subject,
+        },
+        userEmail: owner.email,
+        userName: owner.name,
+        isStaffReply: isStaff,
+      });
+    }
+  } catch (err) {
+    notification = { sent: false, reason: err.message };
+  }
+
+  res.status(201).json({ success: true, message: 'Reply added', data, notification });
+};
+
+/**
+ * List attachments on a ticket
+ */
+const listAttachments = async (req, res) => {
+  const data = await getSdk().tickets.listAttachments(req.params.id);
+  // Customers never see notes; attachment list already only on thread entries — OK
+  res.json({ success: true, data });
+};
+
+/**
+ * Download attachment file (must belong to this ticket)
+ */
+const downloadAttachment = async (req, res) => {
+  const file = await getSdk().tickets.getAttachmentFile(req.params.id, req.params.fileId);
+  res.setHeader('Content-Type', file.mime_type);
+  res.setHeader('Content-Length', file.data.length);
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="${String(file.name).replace(/"/g, '')}"`
+  );
+  res.send(file.data);
+};
+
+/**
+ * Upload attachments onto the latest (or given) thread entry
+ */
+const uploadAttachments = async (req, res) => {
+  const { attachments, entry_id } = req.body || {};
+  const data = await getSdk().tickets.addAttachments(req.params.id, {
+    attachments,
+    entryId: entry_id || null,
+  });
+  res.status(201).json({ success: true, data });
 };
 
 /**
@@ -710,6 +818,9 @@ module.exports = {
   reply,
   addNote,
   merge,
+  listAttachments,
+  downloadAttachment,
+  uploadAttachments,
   createLegacy,
   createLegacyXml,
   createLegacyEmail,

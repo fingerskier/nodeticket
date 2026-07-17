@@ -1367,6 +1367,115 @@ module.exports = (conn, data) => {
     return { target_ticket_id: parseInt(targetTicketId, 10) };
   };
 
+  /**
+   * List attachments on a ticket thread.
+   * @param {number|string} ticketId
+   * @returns {Promise<Array>}
+   */
+  const listAttachments = async (ticketId) => {
+    const threadId = await getThreadId(ticketId);
+    if (!threadId) throw new NotFoundError('Ticket not found');
+
+    const rows = await conn.query(`
+      SELECT a.id as attachment_id, a.file_id, a.name as attach_name, a.inline,
+             f.name as file_name, f.type as mime_type, f.size, f.created,
+             te.id as entry_id, te.type as entry_type
+      FROM ${conn.table('attachment')} a
+      JOIN ${conn.table('file')} f ON f.id = a.file_id
+      JOIN ${conn.table('thread_entry')} te ON te.id = a.object_id AND a.type = 'H'
+      WHERE te.thread_id = ?
+      ORDER BY a.id ASC
+    `, [threadId]);
+
+    return rows.map((r) => ({
+      attachment_id: r.attachment_id,
+      file_id: r.file_id,
+      name: r.attach_name || r.file_name,
+      mime_type: r.mime_type,
+      size: r.size,
+      entry_id: r.entry_id,
+      entry_type: r.entry_type,
+      inline: !!r.inline,
+      created: r.created,
+    }));
+  };
+
+  /**
+   * Load file metadata + bytes if the file is linked to the given ticket.
+   * @param {number|string} ticketId
+   * @param {number|string} fileId
+   * @returns {Promise<{ file_id, name, mime_type, size, data: Buffer }>}
+   */
+  const getAttachmentFile = async (ticketId, fileId) => {
+    const threadId = await getThreadId(ticketId);
+    if (!threadId) throw new NotFoundError('Ticket not found');
+
+    const meta = await conn.queryOne(`
+      SELECT f.id, f.name, f.type, f.size
+      FROM ${conn.table('attachment')} a
+      JOIN ${conn.table('file')} f ON f.id = a.file_id
+      JOIN ${conn.table('thread_entry')} te ON te.id = a.object_id AND a.type = 'H'
+      WHERE te.thread_id = ? AND f.id = ?
+      LIMIT 1
+    `, [threadId, fileId]);
+
+    if (!meta) throw new NotFoundError('Attachment not found');
+
+    const chunks = await conn.query(
+      `SELECT filedata FROM ${conn.table('file_chunk')} WHERE file_id = ? ORDER BY chunk_id ASC`,
+      [fileId]
+    );
+
+    const buffers = chunks.map((c) => {
+      if (Buffer.isBuffer(c.filedata)) return c.filedata;
+      return Buffer.from(c.filedata || '');
+    });
+
+    return {
+      file_id: meta.id,
+      name: meta.name,
+      mime_type: meta.type || 'application/octet-stream',
+      size: meta.size,
+      data: Buffer.concat(buffers),
+    };
+  };
+
+  /**
+   * Attach files to the latest thread entry, or a specific entryId.
+   * @param {number|string} ticketId
+   * @param {Object} params
+   * @param {Array} params.attachments
+   * @param {number} [params.entryId]
+   */
+  const addAttachments = async (ticketId, { attachments = [], entryId = null } = {}) => {
+    if (!Array.isArray(attachments) || attachments.length === 0) {
+      throw new ValidationError('attachments array is required');
+    }
+
+    const threadId = await getThreadId(ticketId);
+    if (!threadId) throw new NotFoundError('Ticket not found');
+
+    let targetEntryId = entryId;
+    if (!targetEntryId) {
+      const last = await conn.queryOne(
+        `SELECT id FROM ${conn.table('thread_entry')} WHERE thread_id = ? ORDER BY id DESC LIMIT 1`,
+        [threadId]
+      );
+      if (!last) throw new ValidationError('Ticket has no thread entries to attach to');
+      targetEntryId = last.id;
+    }
+
+    await conn.transaction(async (txQuery) => {
+      await storeThreadAttachments(txQuery, {
+        entryId: targetEntryId,
+        attachments,
+        now: new Date(),
+      });
+    });
+
+    return listAttachments(ticketId);
+  };
+
   return {
     list,
     get,
@@ -1379,5 +1488,8 @@ module.exports = (conn, data) => {
     close,
     reopen,
     merge,
+    listAttachments,
+    getAttachmentFile,
+    addAttachments,
   };
 };

@@ -158,8 +158,105 @@ const get = async (req, res) => {
   });
 };
 
+/**
+ * Create FAQ (staff/admin)
+ */
+const create = async (req, res) => {
+  const conn = getSdk().connection;
+  const { question, answer, category_id, keywords, ispublished, notes } = req.body || {};
+
+  if (!question || !String(question).trim()) {
+    throw ApiError.badRequest('question is required');
+  }
+  if (!answer || !String(answer).trim()) {
+    throw ApiError.badRequest('answer is required');
+  }
+
+  const now = new Date();
+  const result = await conn.query(
+    `INSERT INTO ${conn.table('faq')}
+      (category_id, ispublished, question, answer, keywords, notes, created, updated)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      category_id || 0,
+      ispublished ? 1 : 0,
+      String(question).trim().substring(0, 255),
+      String(answer),
+      keywords || null,
+      notes || null,
+      now,
+      now,
+    ]
+  );
+
+  res.status(201).json({
+    success: true,
+    data: { faq_id: result.insertId, question: String(question).trim() },
+  });
+};
+
+/**
+ * Update FAQ
+ */
+const update = async (req, res) => {
+  const { id } = req.params;
+  const conn = getSdk().connection;
+  const existing = await conn.queryOne(
+    `SELECT faq_id FROM ${conn.table('faq')} WHERE faq_id = ?`,
+    [id]
+  );
+  if (!existing) throw ApiError.notFound('FAQ article not found');
+
+  const { question, answer, category_id, keywords, ispublished, notes } = req.body || {};
+  const updates = [];
+  const params = [];
+
+  if (question !== undefined) { updates.push('question = ?'); params.push(String(question).trim().substring(0, 255)); }
+  if (answer !== undefined) { updates.push('answer = ?'); params.push(String(answer)); }
+  if (category_id !== undefined) { updates.push('category_id = ?'); params.push(category_id); }
+  if (keywords !== undefined) { updates.push('keywords = ?'); params.push(keywords); }
+  if (ispublished !== undefined) { updates.push('ispublished = ?'); params.push(ispublished ? 1 : 0); }
+  if (notes !== undefined) { updates.push('notes = ?'); params.push(notes); }
+
+  if (updates.length === 0) throw ApiError.badRequest('No valid updates provided');
+
+  updates.push('updated = ?');
+  params.push(new Date());
+  params.push(id);
+
+  await conn.query(
+    `UPDATE ${conn.table('faq')} SET ${updates.join(', ')} WHERE faq_id = ?`,
+    params
+  );
+
+  res.json({ success: true, data: { faq_id: parseInt(id, 10) } });
+};
+
+/**
+ * Delete FAQ
+ */
+const remove = async (req, res) => {
+  const { id } = req.params;
+  const conn = getSdk().connection;
+  const existing = await conn.queryOne(
+    `SELECT faq_id FROM ${conn.table('faq')} WHERE faq_id = ?`,
+    [id]
+  );
+  if (!existing) throw ApiError.notFound('FAQ article not found');
+
+  try {
+    await conn.query(`DELETE FROM ${conn.table('faq_topic')} WHERE faq_id = ?`, [id]);
+  } catch { /* ignore */ }
+  await conn.query(`DELETE FROM ${conn.table('faq')} WHERE faq_id = ?`, [id]);
+
+  res.json({ success: true, message: 'FAQ deleted' });
+};
+
 module.exports = {
   list,
   listCategories,
   get,
+  create,
+  update,
+  remove,
 };
