@@ -858,7 +858,20 @@ async function handleLogin(e) {
     }
   } catch (e) {
     console.error('Login error:', e);
-    if (errorDiv) errorDiv.textContent = 'Connection error. Please try again.';
+    if (errorDiv) {
+      // Common local-dev mistake: open https://localhost while the server is HTTP-only
+      if (window.location.protocol === 'https:' && /localhost|127\.0\.0\.1/.test(window.location.hostname)) {
+        const httpUrl = `http://${window.location.host}${window.location.pathname}${window.location.search}${window.location.hash}`;
+        errorDiv.innerHTML =
+          'Cannot reach the server over <strong>HTTPS</strong> (no TLS certificate). ' +
+          `Open <a href="${httpUrl}">${httpUrl}</a> instead (use <code>http://</code>, not <code>https://</code>).`;
+      } else if (e && (e.name === 'TypeError' || /Failed to fetch|NetworkError|SSL/i.test(String(e.message || e)))) {
+        errorDiv.textContent =
+          'Connection failed. If you used https://, switch to http:// for local dev. Otherwise check that the server is running.';
+      } else {
+        errorDiv.textContent = 'Connection error. Please try again.';
+      }
+    }
   } finally {
     if (submitBtn) {
       submitBtn.disabled = false;
