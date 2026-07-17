@@ -26,13 +26,61 @@ module.exports = (conn, data) => {
   };
 
   /**
-   * Generate a unique ticket number (timestamp + random, base-36, max 11 chars).
+   * Fallback ticket number when no ost_sequence row exists.
    * @returns {string}
    */
   const generateTicketNumber = () => {
     const timestamp = Date.now().toString(36).toUpperCase();
     const random = Math.random().toString(36).substring(2, 6).toUpperCase();
     return `${timestamp}${random}`.substring(0, 11);
+  };
+
+  /**
+   * Allocate next ticket number from ost_sequence (row lock) or fall back.
+   * Must run inside a transaction for correct locking.
+   *
+   * @param {Function} txQuery
+   * @param {Function} txQueryOne
+   * @param {Object} topic - help_topic row (sequence_id, number_format)
+   * @returns {Promise<string>}
+   */
+  const allocateTicketNumber = async (txQuery, txQueryOne, topic = {}) => {
+    const seqId = parseInt(topic.sequence_id, 10) || 0;
+    let seq = null;
+
+    if (seqId > 0) {
+      seq = await txQueryOne(
+        `SELECT * FROM ${conn.table('sequence')} WHERE id = ? FOR UPDATE`,
+        [seqId]
+      );
+    }
+    if (!seq) {
+      seq = await txQueryOne(
+        `SELECT * FROM ${conn.table('sequence')} ORDER BY id ASC LIMIT 1 FOR UPDATE`
+      );
+    }
+    if (!seq) {
+      return generateTicketNumber();
+    }
+
+    const current = parseInt(seq.next, 10) || 1;
+    const increment = parseInt(seq.increment, 10) || 1;
+    const padding = seq.padding != null ? String(seq.padding) : '0';
+    const now = new Date();
+
+    await txQuery(
+      `UPDATE ${conn.table('sequence')} SET next = ?, updated = ? WHERE id = ?`,
+      [current + increment, now, seq.id]
+    );
+
+    const format = topic.number_format;
+    if (format && String(format).includes('#')) {
+      return String(format).replace(/#+/g, (mask) =>
+        String(current).padStart(mask.length, padding)
+      ).substring(0, 20);
+    }
+
+    return String(current).substring(0, 20);
   };
 
   /**
@@ -50,16 +98,27 @@ module.exports = (conn, data) => {
   };
 
   /**
-   * Insert a thread_event row.
+   * Insert a thread_event row with full osTicket v1.18 context columns.
+   *
    * @param {number} threadId
    * @param {string} eventName
    * @param {number|null} staffId
    * @param {string} username
    * @param {*} eventData
-   * @param {Function} [queryFn] - optional txQuery override
-   * @param {Function} [queryOneFn] - optional txQueryOne override
+   * @param {Function} [queryFn]
+   * @param {Function} [queryOneFn]
+   * @param {Object} [ctx] - { deptId, teamId, topicId, uid, uidType, threadType }
    */
-  const logEvent = async (threadId, eventName, staffId, username, eventData, queryFn, queryOneFn) => {
+  const logEvent = async (
+    threadId,
+    eventName,
+    staffId,
+    username,
+    eventData,
+    queryFn,
+    queryOneFn,
+    ctx = {}
+  ) => {
     const qOne = queryOneFn || conn.queryOne;
     const q = queryFn || conn.query;
 
@@ -68,11 +127,67 @@ module.exports = (conn, data) => {
     );
     if (!event) return;
 
+    const now = new Date();
+    const uid = ctx.uid != null ? ctx.uid : (staffId || 0);
+    const uidType = ctx.uidType || (staffId ? 'S' : 'U');
+
     await q(`
-      INSERT INTO ${conn.table('thread_event')}
-      (thread_id, event_id, staff_id, username, data, timestamp)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `, [threadId, event.id, staffId || 0, username || '', JSON.stringify(eventData), new Date()]);
+      INSERT INTO ${conn.table('thread_event')} (
+        thread_id, thread_type, event_id, staff_id, team_id, dept_id, topic_id,
+        data, username, uid, uid_type, annulled, timestamp
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+    `, [
+      threadId,
+      ctx.threadType || 'T',
+      event.id,
+      staffId || 0,
+      ctx.teamId || 0,
+      ctx.deptId || 0,
+      ctx.topicId || 0,
+      eventData != null ? JSON.stringify(eventData) : null,
+      username || 'SYSTEM',
+      uid,
+      uidType,
+      now,
+    ]);
+  };
+
+  /**
+   * Insert a thread_entry with required osTicket columns (including updated).
+   */
+  const insertThreadEntry = async (q, {
+    threadId,
+    staffId = 0,
+    userId = 0,
+    type,
+    poster,
+    source = 'API',
+    title = null,
+    body,
+    format = 'text',
+    ipAddress = '',
+    now = new Date(),
+  }) => {
+    const result = await q(`
+      INSERT INTO ${conn.table('thread_entry')} (
+        pid, thread_id, staff_id, user_id, type, flags, poster,
+        source, title, body, format, ip_address, created, updated
+      ) VALUES (0, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      threadId,
+      staffId || 0,
+      userId || 0,
+      type,
+      poster || '',
+      source || '',
+      title,
+      body,
+      format || 'text',
+      ipAddress || '',
+      now,
+      now,
+    ]);
+    return result.insertId;
   };
 
   /**
@@ -467,31 +582,38 @@ module.exports = (conn, data) => {
   };
 
   /**
-   * Create a new ticket.
+   * Create a new ticket (transactional, schema-aligned with osTicket v1.18).
+   *
+   * Writes ticket + optional cdata + thread + first message + created event
+   * in one transaction so a mid-flight failure leaves no orphans.
    *
    * @param {Object} params
-   * @param {number|string} params.userId - The user who owns the ticket
-   * @param {number|string} params.topicId - Help topic ID
-   * @param {string} params.subject - Ticket subject
-   * @param {string} params.body - Initial message body
-   * @param {string} [params.source='API'] - Creation source
-   * @returns {Promise<Object>} Created ticket summary
-   * @throws {ValidationError} If required fields are missing or topic is invalid
-   *
-   * @example
-   * const ticket = await tickets.create({
-   *   userId: 5, topicId: 2, subject: 'Help me', body: 'Details here'
-   * });
+   * @param {number|string} params.userId
+   * @param {number|string} params.topicId
+   * @param {string} params.subject
+   * @param {string} params.body
+   * @param {string} [params.source='API']
+   * @param {string} [params.ipAddress='']
+   * @param {string} [params.poster]
+   * @returns {Promise<Object>}
    */
-  const create = async ({ userId, topicId, subject, body, source = 'API' }) => {
+  const create = async ({
+    userId,
+    topicId,
+    subject,
+    body,
+    source = 'API',
+    ipAddress = '',
+    poster,
+  }) => {
     if (!userId) throw new ValidationError('userId is required');
     if (!topicId) throw new ValidationError('topicId is required');
     if (!subject || !subject.trim()) throw new ValidationError('Subject is required');
     if (!body || !body.trim()) throw new ValidationError('Message body is required');
 
-    // Verify topic
+    // Active + public topic (flags bit0 = active in this codebase / osTicket)
     const topic = await conn.queryOne(`
-      SELECT ht.*, d.id as dept_id, d.name as dept_name
+      SELECT ht.*, d.id as dept_join_id, d.name as dept_name
       FROM ${conn.table('help_topic')} ht
       LEFT JOIN ${conn.table('department')} d ON ht.dept_id = d.id
       WHERE ht.topic_id = ? AND ht.ispublic = 1
@@ -502,59 +624,163 @@ module.exports = (conn, data) => {
       throw new ValidationError('Invalid or inactive help topic');
     }
 
-    const ticketNumber = generateTicketNumber();
-
-    // Default open status
-    const defaultStatus = await conn.queryOne(`
-      SELECT id FROM ${conn.table('ticket_status')}
-      WHERE state = 'open' AND mode = 1
-      ORDER BY sort ASC LIMIT 1
-    `);
-
-    if (!defaultStatus) {
-      throw new ValidationError('Unable to find default open ticket status');
+    // Status: topic override, else default open
+    let statusId = parseInt(topic.status_id, 10) || 0;
+    if (statusId > 0) {
+      const st = await conn.queryOne(
+        `SELECT id FROM ${conn.table('ticket_status')} WHERE id = ?`,
+        [statusId]
+      );
+      if (!st) statusId = 0;
+    }
+    if (!statusId) {
+      const defaultStatus = await conn.queryOne(`
+        SELECT id FROM ${conn.table('ticket_status')}
+        WHERE state = 'open'
+        ORDER BY sort ASC LIMIT 1
+      `);
+      if (!defaultStatus) {
+        throw new ValidationError('Unable to find default open ticket status');
+      }
+      statusId = defaultStatus.id;
     }
 
-    const now = new Date();
+    const user = await conn.queryOne(
+      `SELECT id, name, default_email_id FROM ${conn.table('user')} WHERE id = ?`,
+      [userId]
+    );
+    if (!user) throw new ValidationError('Invalid userId');
 
-    const ticketResult = await conn.query(`
-      INSERT INTO ${conn.table('ticket')} (
-        number, user_id, dept_id, topic_id, status_id, source,
-        isoverdue, isanswered, duedate, est_duedate,
-        created, updated
-      ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, NULL, NULL, ?, ?)
-    `, [ticketNumber, userId, topic.dept_id, topicId, defaultStatus.id, source, now, now]);
+    const deptId = parseInt(topic.dept_id, 10) || 0;
+    const staffId = parseInt(topic.staff_id, 10) || 0;
+    const teamId = parseInt(topic.team_id, 10) || 0;
+    const slaId = parseInt(topic.sla_id, 10) || 0;
 
-    const ticketId = ticketResult.insertId;
+    let duedate = null;
+    let estDuedate = null;
+    if (slaId > 0) {
+      const sla = await conn.queryOne(
+        `SELECT id, grace_period FROM ${conn.table('sla')} WHERE id = ?`,
+        [slaId]
+      );
+      if (sla && sla.grace_period) {
+        const hours = parseInt(sla.grace_period, 10) || 0;
+        if (hours > 0) {
+          duedate = new Date(Date.now() + hours * 3600 * 1000);
+          estDuedate = duedate;
+        }
+      }
+    }
 
-    // Custom data (subject)
-    await conn.query(`
-      INSERT INTO ${conn.table('ticket__cdata')} (ticket_id, subject) VALUES (?, ?)
-    `, [ticketId, subject.trim().substring(0, 255)]);
+    const allowedSources = new Set(['Web', 'Email', 'Phone', 'API', 'Other']);
+    const ticketSource = allowedSources.has(source) ? source : 'API';
+    const displayPoster = poster || user.name || 'User';
+    const subjectTrim = subject.trim().substring(0, 255);
+    const bodyTrim = body.trim();
 
-    // Thread
-    const threadResult = await conn.query(`
-      INSERT INTO ${conn.table('thread')} (object_id, object_type, lastmessage, created)
-      VALUES (?, 'T', ?, ?)
-    `, [ticketId, now, now]);
+    const created = await conn.transaction(async (txQuery, txQueryOne) => {
+      const now = new Date();
+      const ticketNumber = await allocateTicketNumber(txQuery, txQueryOne, topic);
 
-    const threadId = threadResult.insertId;
+      const ticketResult = await txQuery(`
+        INSERT INTO ${conn.table('ticket')} (
+          number, user_id, user_email_id, status_id, dept_id, sla_id, topic_id,
+          staff_id, team_id, email_id, lock_id, flags, sort, ip_address, source,
+          isoverdue, isanswered, duedate, est_duedate, lastupdate, created, updated
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, 0, 0, 0, 0, ?, ?,
+          0, 0, ?, ?, ?, ?, ?
+        )
+      `, [
+        ticketNumber,
+        userId,
+        user.default_email_id || 0,
+        statusId,
+        deptId,
+        slaId,
+        topicId,
+        staffId,
+        teamId,
+        ipAddress || '',
+        ticketSource,
+        duedate,
+        estDuedate,
+        now,
+        now,
+        now,
+      ]);
 
-    // First message entry
-    await conn.query(`
-      INSERT INTO ${conn.table('thread_entry')} (
-        thread_id, user_id, type, poster, source, body, format, created
-      ) VALUES (?, ?, 'M', ?, ?, ?, 'text', ?)
-    `, [threadId, userId, 'User', source, body.trim(), now]);
+      const ticketId = ticketResult.insertId;
 
-    return {
-      ticket_id: ticketId,
-      number: ticketNumber,
-      subject: subject.trim(),
-      status: 'open',
-      department: topic.dept_name,
-      created: now,
-    };
+      // Dynamic form cdata (subject) — optional if table not bootstrapped
+      try {
+        await txQuery(`
+          INSERT INTO ${conn.table('ticket__cdata')} (ticket_id, subject) VALUES (?, ?)
+        `, [ticketId, subjectTrim]);
+      } catch (err) {
+        // Missing dynamic table should not abort core ticket write in mixed envs,
+        // but inside a transaction MySQL will mark the tx failed after any error.
+        // Re-throw so callers get a clear failure rather than a half-committed state.
+        // Production installs must have ticket__cdata from form bootstrap.
+        throw new ValidationError(
+          `Failed to write ticket custom data (ticket__cdata): ${err.message}`
+        );
+      }
+
+      const threadResult = await txQuery(`
+        INSERT INTO ${conn.table('thread')} (object_id, object_type, lastmessage, created)
+        VALUES (?, 'T', ?, ?)
+      `, [ticketId, now, now]);
+      const threadId = threadResult.insertId;
+
+      await insertThreadEntry(txQuery, {
+        threadId,
+        userId,
+        type: 'M',
+        poster: displayPoster,
+        source: ticketSource,
+        body: bodyTrim,
+        format: 'text',
+        ipAddress,
+        now,
+      });
+
+      await logEvent(
+        threadId,
+        'created',
+        null,
+        displayPoster,
+        { source: ticketSource, topic_id: topicId },
+        txQuery,
+        txQueryOne,
+        {
+          deptId,
+          teamId,
+          topicId,
+          uid: userId,
+          uidType: 'U',
+          threadType: 'T',
+        }
+      );
+
+      return {
+        ticket_id: ticketId,
+        number: ticketNumber,
+        subject: subjectTrim,
+        status: 'open',
+        status_id: statusId,
+        department: topic.dept_name,
+        dept_id: deptId,
+        sla_id: slaId || null,
+        staff_id: staffId || null,
+        team_id: teamId || null,
+        duedate,
+        created: now,
+      };
+    });
+
+    return created;
   };
 
   /**
@@ -612,8 +838,24 @@ module.exports = (conn, data) => {
         );
         if (oldStatus?.state === 'closed') {
           updates.push('closed = ?'); params.push(null);
+          updates.push('reopened = ?'); params.push(new Date());
           if (ticket.thread_id) {
-            await logEvent(ticket.thread_id, 'reopened', staffId, username, { status_id });
+            await logEvent(
+              ticket.thread_id,
+              'reopened',
+              staffId,
+              username,
+              { status_id },
+              undefined,
+              undefined,
+              {
+                deptId: ticket.dept_id,
+                teamId: ticket.team_id,
+                topicId: ticket.topic_id,
+                uid: staffId || 0,
+                uidType: staffId ? 'S' : 'U',
+              }
+            );
           }
         }
       }
@@ -686,7 +928,9 @@ module.exports = (conn, data) => {
       throw new ValidationError('No valid updates provided');
     }
 
-    updates.push('updated = ?'); params.push(new Date());
+    const now = new Date();
+    updates.push('lastupdate = ?'); params.push(now);
+    updates.push('updated = ?'); params.push(now);
     params.push(ticketId);
 
     await conn.query(
@@ -715,48 +959,92 @@ module.exports = (conn, data) => {
    * @example
    * await tickets.reply(42, { staffId: 1, body: 'Working on it', poster: 'Admin' });
    */
-  const reply = async (ticketId, { staffId = null, userId = null, body, format = 'text', poster, source = 'API' }) => {
+  const reply = async (ticketId, {
+    staffId = null,
+    userId = null,
+    body,
+    format = 'text',
+    poster,
+    source = 'API',
+    ipAddress = '',
+  }) => {
     if (!body || !body.trim()) throw new ValidationError('Message body is required');
 
-    const threadId = await getThreadId(ticketId);
-    if (!threadId) throw new NotFoundError('Ticket not found');
+    const ticket = await conn.queryOne(`
+      SELECT t.ticket_id, t.dept_id, t.team_id, t.topic_id, th.id as thread_id
+      FROM ${conn.table('ticket')} t
+      LEFT JOIN ${conn.table('thread')} th ON th.object_id = t.ticket_id AND th.object_type = 'T'
+      WHERE t.ticket_id = ?
+    `, [ticketId]);
+    if (!ticket?.thread_id) throw new NotFoundError('Ticket not found');
 
+    const threadId = ticket.thread_id;
     const isStaff = !!staffId;
     const entryType = isStaff ? 'R' : 'M';
     const displayPoster = poster || (isStaff ? 'Staff' : 'User');
     const now = new Date();
+    const bodyTrim = body.trim();
 
-    const result = await conn.query(`
-      INSERT INTO ${conn.table('thread_entry')}
-      (thread_id, staff_id, user_id, type, poster, source, body, format, created)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [threadId, staffId || 0, userId || 0, entryType, displayPoster, source, body.trim(), format, now]);
+    const entryId = await conn.transaction(async (txQuery, txQueryOne) => {
+      const id = await insertThreadEntry(txQuery, {
+        threadId,
+        staffId: staffId || 0,
+        userId: userId || 0,
+        type: entryType,
+        poster: displayPoster,
+        source,
+        body: bodyTrim,
+        format,
+        ipAddress,
+        now,
+      });
 
-    // Update thread/ticket timestamps
-    if (isStaff) {
-      await conn.query(
-        `UPDATE ${conn.table('thread')} SET lastresponse = ? WHERE id = ?`, [now, threadId]
-      );
-      await conn.query(
-        `UPDATE ${conn.table('ticket')} SET isanswered = 1, updated = ? WHERE ticket_id = ?`, [now, ticketId]
-      );
-    } else {
-      await conn.query(
-        `UPDATE ${conn.table('thread')} SET lastmessage = ? WHERE id = ?`, [now, threadId]
-      );
-      await conn.query(
-        `UPDATE ${conn.table('ticket')} SET updated = ? WHERE ticket_id = ?`, [now, ticketId]
-      );
-    }
+      if (isStaff) {
+        await txQuery(
+          `UPDATE ${conn.table('thread')} SET lastresponse = ? WHERE id = ?`,
+          [now, threadId]
+        );
+        await txQuery(
+          `UPDATE ${conn.table('ticket')} SET isanswered = 1, lastupdate = ?, updated = ? WHERE ticket_id = ?`,
+          [now, now, ticketId]
+        );
+      } else {
+        await txQuery(
+          `UPDATE ${conn.table('thread')} SET lastmessage = ? WHERE id = ?`,
+          [now, threadId]
+        );
+        await txQuery(
+          `UPDATE ${conn.table('ticket')} SET lastupdate = ?, updated = ? WHERE ticket_id = ?`,
+          [now, now, ticketId]
+        );
+      }
 
-    await logEvent(threadId, 'message', staffId, displayPoster, { type: entryType });
+      await logEvent(
+        threadId,
+        'message',
+        staffId,
+        displayPoster,
+        { type: entryType },
+        txQuery,
+        txQueryOne,
+        {
+          deptId: ticket.dept_id,
+          teamId: ticket.team_id,
+          topicId: ticket.topic_id,
+          uid: staffId || userId || 0,
+          uidType: isStaff ? 'S' : 'U',
+        }
+      );
+
+      return id;
+    });
 
     return {
-      id: result.insertId,
+      id: entryId,
       thread_id: threadId,
       type: entryType,
       poster: displayPoster,
-      body: body.trim(),
+      body: bodyTrim,
       created: now,
     };
   };
@@ -777,34 +1065,68 @@ module.exports = (conn, data) => {
    * @example
    * await tickets.addNote(42, { staffId: 1, title: 'Internal', body: 'Escalating...' });
    */
-  const addNote = async (ticketId, { staffId, title, body, poster }) => {
+  const addNote = async (ticketId, { staffId, title, body, poster, ipAddress = '' }) => {
     if (!body || !body.trim()) throw new ValidationError('Note content is required');
 
-    const threadId = await getThreadId(ticketId);
-    if (!threadId) throw new NotFoundError('Ticket not found');
+    const ticket = await conn.queryOne(`
+      SELECT t.ticket_id, t.dept_id, t.team_id, t.topic_id, th.id as thread_id
+      FROM ${conn.table('ticket')} t
+      LEFT JOIN ${conn.table('thread')} th ON th.object_id = t.ticket_id AND th.object_type = 'T'
+      WHERE t.ticket_id = ?
+    `, [ticketId]);
+    if (!ticket?.thread_id) throw new NotFoundError('Ticket not found');
 
+    const threadId = ticket.thread_id;
     const now = new Date();
     const displayPoster = poster || 'Staff';
+    const bodyTrim = body.trim();
 
-    const result = await conn.query(`
-      INSERT INTO ${conn.table('thread_entry')}
-      (thread_id, staff_id, type, poster, title, source, body, format, created)
-      VALUES (?, ?, 'N', ?, ?, 'API', ?, 'text', ?)
-    `, [threadId, staffId || 0, displayPoster, title || null, body.trim(), now]);
+    const entryId = await conn.transaction(async (txQuery, txQueryOne) => {
+      const id = await insertThreadEntry(txQuery, {
+        threadId,
+        staffId: staffId || 0,
+        type: 'N',
+        poster: displayPoster,
+        source: 'API',
+        title: title || null,
+        body: bodyTrim,
+        format: 'text',
+        ipAddress,
+        now,
+      });
 
-    await conn.query(
-      `UPDATE ${conn.table('ticket')} SET updated = ? WHERE ticket_id = ?`, [now, ticketId]
-    );
+      await txQuery(
+        `UPDATE ${conn.table('ticket')} SET lastupdate = ?, updated = ? WHERE ticket_id = ?`,
+        [now, now, ticketId]
+      );
 
-    await logEvent(threadId, 'note', staffId, displayPoster, { title: title || null });
+      await logEvent(
+        threadId,
+        'note',
+        staffId,
+        displayPoster,
+        { title: title || null },
+        txQuery,
+        txQueryOne,
+        {
+          deptId: ticket.dept_id,
+          teamId: ticket.team_id,
+          topicId: ticket.topic_id,
+          uid: staffId || 0,
+          uidType: 'S',
+        }
+      );
+
+      return id;
+    });
 
     return {
-      id: result.insertId,
+      id: entryId,
       thread_id: threadId,
       type: 'N',
       poster: displayPoster,
       title: title || null,
-      body: body.trim(),
+      body: bodyTrim,
       created: now,
     };
   };

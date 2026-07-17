@@ -332,9 +332,9 @@ module.exports = (conn, data) => {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         username.trim(), firstname.trim(), lastname.trim(), email.trim(), hashedPassword,
-        dept_id, role_id, phone || null, isadmin ? 1 : 0,
+        dept_id, role_id, phone || '', isadmin ? 1 : 0,
         isactive !== undefined ? (isactive ? 1 : 0) : 1,
-        signature || null, timezone || null, now, now,
+        signature || '', timezone || null, now, now,
       ]);
 
       const staffId = insertResult.insertId;

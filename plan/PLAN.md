@@ -693,6 +693,7 @@ This PLAN incorporates both: CODEX order, GROK product completeness after A4.
 |------|--------|
 | 2026-07-16 | Initial master plan from CODEX + GROK findings and project docs |
 | 2026-07-16 | **A0 partially landed in code:** JWT `token_use`, API-key isolation, customer thread/event privacy, staff dept visibility + `requirePermission` on note/merge, named close/reopen, session CSRF on API, legacy `/api` mount limited to `tickets.json`, unit tests + `docker-compose.fixture.yml`. Remaining A0 polish: org/dept profile privacy (A0.9), KB/topic public allowlists (A0.10), production error hardening (A0.14), HTTP integration tests with fixture. |
+| 2026-07-16 | **A1 core write kernel landed:** transactional ticket create (ticket+cdata+thread+entry+event); `ost_sequence` numbering + topic `number_format`; topic defaults (dept/staff/team/sla/status) + SLA due dates; `thread_entry.updated` + full `thread_event` context columns; reply/note transactional; org/staff/dept NOT NULL defaults; unit tests `test/sdk.tickets.create-kernel.test.js`; fixture docs `docs/FIXTURE.md`. Remaining A1: scripted v1.18.4 bootstrap + live-DB integration + PHP interop. |
 
 ---
 

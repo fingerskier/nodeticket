@@ -287,7 +287,7 @@ module.exports = (conn, data) => {
     `, [
       pid || 0, name.trim(), path, manager_id || 0, sla_id || 0,
       ispublic !== undefined ? (ispublic ? 1 : 0) : 1,
-      signature || null, flags || 0, now, now,
+      signature || '', flags || 0, now, now,
     ]);
 
     return {

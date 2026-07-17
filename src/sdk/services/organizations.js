@@ -263,9 +263,13 @@ module.exports = (conn, data) => {
       INSERT INTO ${conn.table('organization')} (name, domain, status, manager, extra, created, updated)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `, [
-      name.trim(), domain || null, status || 0,
-      manager || null, extra ? JSON.stringify(extra) : null,
-      now, now,
+      name.trim(),
+      domain || '',
+      status || 0,
+      manager || '',
+      extra ? JSON.stringify(extra) : null,
+      now,
+      now,
     ]);
 
     return {
