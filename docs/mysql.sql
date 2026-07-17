@@ -401,11 +401,11 @@ CREATE TABLE ost_thread_entry_email (
   id INT(11) UNSIGNED NOT NULL AUTO_INCREMENT,
   thread_entry_id INT(11) UNSIGNED NOT NULL,
   email_id INT(11) UNSIGNED DEFAULT NULL,
-  mid VARCHAR(255) NOT NULL,
+  `mid` VARCHAR(255) NOT NULL,
   headers TEXT,
   PRIMARY KEY (id),
   KEY thread_entry_id (thread_entry_id),
-  KEY mid (mid),
+  KEY mid_idx (`mid`),
   KEY email_id (email_id)
 );
 
@@ -720,7 +720,7 @@ CREATE TABLE ost_list (
   sort_mode ENUM('Alpha','-Alpha','SortCol') NOT NULL DEFAULT 'Alpha',
   masks INT(11) UNSIGNED NOT NULL DEFAULT 0,
   type VARCHAR(16) NULL DEFAULT NULL,
-  configuration TEXT NOT NULL DEFAULT '',
+  configuration TEXT NOT NULL,
   notes TEXT,
   created DATETIME NOT NULL,
   updated DATETIME NOT NULL,

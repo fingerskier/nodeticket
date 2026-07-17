@@ -10,7 +10,13 @@
     "start": "node src/app.js",
     "dev": "node --watch src/app.js",
     "cli": "node bin/nodeticket.js",
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test \"test/*.test.js\"",
+    "test:http": "node --test \"test/integration/**/*.test.js\"",
+    "test:all": "node --test \"test/**/*.test.js\"",
+    "fixture:up": "docker compose -f docker-compose.fixture.yml up -d",
+    "fixture:down": "docker compose -f docker-compose.fixture.yml down",
+    "fixture:bootstrap": "node scripts/fixture-bootstrap.js",
+    "fixture:reset": "npm run fixture:up && node scripts/fixture-bootstrap.js"
   },
   "keywords": [
     "helpdesk",

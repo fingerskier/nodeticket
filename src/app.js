@@ -194,52 +194,75 @@ if (config.mcp.enabled) {
 app.use(notFoundHandler);
 app.use(errorHandler);
 
-// Initialize database and start server
-const start = async () => {
-  try {
-    // Initialize database connection
-    await db.initialize();
-
-    // Seed default email templates and bulk event types (idempotent)
+/**
+ * Initialize DB (+ optional template seed) without listening.
+ * Used by production start and by integration tests.
+ */
+const initializeApp = async ({ seed = true } = {}) => {
+  await db.initialize();
+  if (seed) {
     try {
-      const { seed } = require('./lib/seedEmailTemplates');
-      await seed();
+      const { seed: seedTemplates } = require('./lib/seedEmailTemplates');
+      await seedTemplates();
     } catch (e) {
       console.warn('Seed step failed:', e.message);
     }
+  }
+  return app;
+};
 
-    // Start server
-    const server = app.listen(config.port, config.host, () => {
-      console.log(`Nodeticket server running on http://${config.host}:${config.port}`);
-      console.log(`Environment: ${config.env}`);
-      console.log(`Database: ${config.db.dialect} @ ${config.db.host}:${config.db.port}/${config.db.name}`);
+// Initialize database and start server
+const start = async (options = {}) => {
+  try {
+    await initializeApp(options);
+
+    const port = options.port != null ? options.port : config.port;
+    const host = options.host != null ? options.host : config.host;
+
+    const server = await new Promise((resolve, reject) => {
+      const s = app.listen(port, host, () => resolve(s));
+      s.on('error', reject);
     });
 
-    // Graceful shutdown
-    const shutdown = async (signal) => {
-      console.log(`\n${signal} received, shutting down...`);
-      server.close(async () => {
-        await db.close();
-        console.log('Server closed');
-        process.exit(0);
-      });
+    const addr = server.address();
+    const boundPort = typeof addr === 'object' && addr ? addr.port : port;
+    if (!options.quiet) {
+      console.log(`Nodeticket server running on http://${host}:${boundPort}`);
+      console.log(`Environment: ${config.env}`);
+      console.log(`Database: ${config.db.dialect} @ ${config.db.host}:${config.db.port}/${config.db.name}`);
+    }
 
-      // Force shutdown after 10 seconds
-      setTimeout(() => {
-        console.error('Forced shutdown');
-        process.exit(1);
-      }, 10000);
-    };
+    // Graceful shutdown (only when run as main process)
+    if (require.main === module) {
+      const shutdown = async (signal) => {
+        console.log(`\n${signal} received, shutting down...`);
+        server.close(async () => {
+          await db.close();
+          console.log('Server closed');
+          process.exit(0);
+        });
 
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
-    process.on('SIGINT', () => shutdown('SIGINT'));
+        setTimeout(() => {
+          console.error('Forced shutdown');
+          process.exit(1);
+        }, 10000);
+      };
 
+      process.on('SIGTERM', () => shutdown('SIGTERM'));
+      process.on('SIGINT', () => shutdown('SIGINT'));
+    }
+
+    return { app, server, port: boundPort };
   } catch (err) {
     console.error('Failed to start server:', err);
-    process.exit(1);
+    if (require.main === module) process.exit(1);
+    throw err;
   }
 };
 
-start();
+module.exports = { app, start, initializeApp };
 
-module.exports = app;
+// Only auto-listen when executed directly (not when required by tests)
+if (require.main === module) {
+  start();
+}

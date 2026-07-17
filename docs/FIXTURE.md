@@ -1,49 +1,55 @@
-# Database fixture (Gate A1)
+# Database fixture (integration tests)
 
-## Supported target
+A **MySQL fixture** is a disposable, known-good osTicket-shaped database used to prove real HTTP + SQL behavior (not just unit mocks).
+
+## Target
 
 | Item | Value |
 |------|--------|
-| Database | **MySQL 8.0+** |
-| Schema | **osTicket FOSS v1.18.x** (pin: **v1.18.4**) |
-| Table prefix | `ost_` (configurable via `TABLE_PREFIX`) |
-| SQL mode | Prefer `STRICT_TRANS_TABLES` |
+| Engine | MySQL 8.0 (Docker) |
+| Schema | `docs/mysql.sql` (+ `test/fixture/extra-schema.sql` for `ticket__cdata`) |
+| Host/port | `127.0.0.1:3307` |
+| Database | `osticket` |
+| App user | `osticket` / `osticket` |
+| Root | `root` / `root` |
+| Table prefix | `ost_` |
 
-PostgreSQL is **not** a supported production dialect until a dedicated implementation track lands. Configure `DB_DIALECT=mysql` only.
-
-## Local MySQL via Docker
+## One-time / reset
 
 ```bash
-docker compose -f docker-compose.fixture.yml up -d
+# Start MySQL (Docker Desktop must be running)
+npm run fixture:up
+
+# Load schema + seed identities (idempotent clean slate)
+npm run fixture:bootstrap
+
+# Or both:
+npm run fixture:reset
 ```
 
-This starts MySQL 8 on host port **3307**:
+## Seeded accounts
 
-| Setting | Value |
-|---------|--------|
-| Host | `127.0.0.1` |
-| Port | `3307` |
-| Database | `osticket` |
-| User | `osticket` / `osticket` |
-| Root | `root` / `root` |
+| Kind | Username | Password | Notes |
+|------|----------|----------|--------|
+| Staff admin | `admin` | `password123` | `isadmin=1` |
+| Customer | `customer` | `password123` | verified account |
+| API key | `NTFIXTURETESTKEY00000000000000000000000000000001` | — | `can_create_tickets` + `can_exec_cron`, IP `0.0.0.0` |
+| Help topic | id `1` | — | General Inquiry, public + active |
 
-## Bootstrap a stock schema
+## Run tests
 
-1. Download [osTicket v1.18.4](https://github.com/osTicket/osTicket/releases/tag/v1.18.4).
-2. Apply the official install stream SQL (replace `%TABLE_PREFIX%` with `ost_`):
+```bash
+# Unit tests only (no Docker required)
+npm test
 
-   `setup/inc/streams/core/install-mysql.sql`
+# Integration HTTP tests (requires fixture up + bootstrap)
+npm run test:http
 
-3. Complete a normal osTicket web install **or** seed minimum rows:
-   - At least one department, role, staff admin, help topic (public + active `flags & 1`)
-   - Default ticket statuses (`open`, `closed`)
-   - Default ticket form so dynamic table `ost_ticket__cdata` exists with a `subject` column
-   - Optional: `ost_sequence` row for ticket numbering
-   - Core events (`created`, `closed`, `reopened`, `assigned`, `transferred`, `message`, `note`, `merged`, …)
+# Everything (integration skips if MySQL not reachable)
+npm run test:all
+```
 
-Nodeticket **does not** create dynamic `__cdata` tables; those come from osTicket form bootstrap.
-
-## Nodeticket `.env` for the fixture
+## App `.env` for manual use against the fixture
 
 ```env
 DB_DIALECT=mysql
@@ -53,18 +59,23 @@ DB_NAME=osticket
 DB_USER=osticket
 DB_PASSWORD=osticket
 TABLE_PREFIX=ost_
+JWT_SECRET=fixture-jwt-secret
+SESSION_SECRET=fixture-session-secret
 ```
 
-## What A1 code assumes
+## What bootstrap does
 
-- `help_topic` uses `flags` / `ispublic` (not a nonexistent `isactive` column)
-- `thread_entry.updated` is NOT NULL
-- `thread_event` requires `thread_type`, `staff_id`, `team_id`, `dept_id`, `topic_id`, `uid`, `uid_type`, `annulled`, `timestamp`
-- Ticket create runs in a **single transaction** (ticket → cdata → thread → entry → event)
-- Ticket numbers prefer `ost_sequence` (+ optional `help_topic.number_format`)
+1. Wait until MySQL accepts connections on port 3307  
+2. Drop any existing `ost_*` tables  
+3. Apply `docs/mysql.sql`  
+4. Ensure `ost_ticket__cdata` exists  
+5. Seed statuses, dept, role, staff, user, topic, sequence, events, API key  
 
-## Automated tests today
+## Troubleshooting
 
-Unit tests under `test/sdk.tickets.create-kernel.test.js` assert SQL shape and transactional create without a live DB.
-
-Full integration tests against this fixture (and optional PHP bidirectional checks) are the next hardening step after bootstrap is scripted in CI.
+| Symptom | Fix |
+|---------|-----|
+| `fixture:bootstrap` wait forever | Start Docker Desktop; `docker compose -f docker-compose.fixture.yml ps` |
+| Access denied for osticket | Re-run bootstrap (it grants privileges) |
+| Integration tests skip | Bootstrap not run, or wrong port |
+| Port 3307 in use | Change host port in `docker-compose.fixture.yml` and `FIXTURE_PORT` |
