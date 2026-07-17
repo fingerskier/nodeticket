@@ -115,51 +115,53 @@ const formatDate = (date) => {
 const views = {
   async home() {
     const content = document.getElementById('content');
-    content.classList.add('fade-out');
+    if (!content) return;
 
-    await delay(150);
-
-    let statsHtml = '';
-    if (currentUser) {
-      try {
-        const res = await api.get(`/tickets?user_id=${currentUser.id}&status=open`);
-        statsHtml = `
-          <div class="dashboard">
-            <div class="stats-card">
-              <h3>Your Open Tickets</h3>
-              <p class="stat-number">${res.pagination?.total || 0}</p>
-              <button class="btn btn-primary" data-state="tickets">View Tickets</button>
-            </div>
-            <div class="quick-actions">
-              <h3>Quick Actions</h3>
-              <button class="btn btn-success" data-state="create">Create New Ticket</button>
-              <button class="btn" data-state="tickets">View All Tickets</button>
-              <button class="btn" data-state="faq">Browse Knowledge Base</button>
-            </div>
-          </div>
-        `;
-      } catch (e) {
-        console.error('Error loading stats:', e);
-      }
-    }
-
+    // Always paint shell first so we never stick on the HTML "Loading..." placeholder
+    // while waiting on the tickets API (slow/hung DB was freezing the home view).
     content.innerHTML = `
       <div class="hero">
-        <h1>Welcome to ${window.APP_CONFIG?.title || 'Nodeticket Help Desk'}</h1>
+        <h1>Welcome to ${escapeHtml(window.APP_CONFIG?.title || 'Nodeticket Help Desk')}</h1>
         <p>How can we help you today?</p>
       </div>
-      ${currentUser ? statsHtml : `
+      ${currentUser ? `
+        <div class="dashboard" id="homeDashboard">
+          <div class="stats-card">
+            <h3>Your Open Tickets</h3>
+            <p class="stat-number" id="openTicketCount">…</p>
+            <button class="btn btn-primary" data-state="tickets">View Tickets</button>
+          </div>
+          <div class="quick-actions">
+            <h3>Quick Actions</h3>
+            <button class="btn btn-success" data-state="create">Create New Ticket</button>
+            <button class="btn" data-state="tickets">View All Tickets</button>
+            <button class="btn" data-state="faq">Browse Knowledge Base</button>
+          </div>
+        </div>
+      ` : `
         <div class="login-prompt">
           <p>Please <button class="link-btn" data-state="login">login</button> to view your tickets or submit a new request.</p>
         </div>
       `}
     `;
-
     bindStateButtons();
-    content.classList.remove('fade-out');
-    content.classList.add('fade-in');
-    await delay(150);
-    content.classList.remove('fade-in');
+
+    if (!currentUser) return;
+
+    // Load open-ticket count in background (do not block UI)
+    try {
+      const res = await api.get(`/tickets?status=open&limit=1`);
+      const el = document.getElementById('openTicketCount');
+      if (el) {
+        el.textContent = String(
+          res?.pagination?.total != null ? res.pagination.total : (res?.data?.length || 0)
+        );
+      }
+    } catch (e) {
+      console.error('Error loading stats:', e);
+      const el = document.getElementById('openTicketCount');
+      if (el) el.textContent = '—';
+    }
   },
 
   async login() {
@@ -349,21 +351,24 @@ const views = {
     await delay(150);
     content.classList.remove('fade-in');
 
+    const ticketsList = document.getElementById('ticketsList');
+    const pagEl = document.getElementById('ticketsPagination');
     try {
       const qs = new URLSearchParams({ page: String(page), limit: '25' });
       if (status) qs.set('status', status);
       const res = await api.get(`/tickets?${qs.toString()}`);
-      const ticketsList = document.getElementById('ticketsList');
-      const pagEl = document.getElementById('ticketsPagination');
+      if (!ticketsList) return;
 
-      if (!res.success || !res.data?.length) {
+      const rows = Array.isArray(res?.data) ? res.data : [];
+      if (!res?.success || rows.length === 0) {
         ticketsList.innerHTML = `
           <div class="empty-state">
-            <p>No tickets found.</p>
+            <p>${escapeHtml(res?.message || 'No tickets found.')}</p>
             <button class="btn btn-primary" data-state="create">Create Your First Ticket</button>
           </div>
         `;
         if (pagEl) pagEl.innerHTML = '';
+        ticketsList.classList.remove('loading');
         bindStateButtons();
         return;
       }
@@ -380,7 +385,7 @@ const views = {
             </tr>
           </thead>
           <tbody>
-            ${res.data.map(t => `
+            ${rows.map(t => `
               <tr class="clickable-row" data-state="ticket" data-id="${t.ticket_id}" tabindex="0" role="link">
                 <td><span class="ticket-number">${escapeHtml(t.number)}</span></td>
                 <td>${escapeHtml(t.subject || 'No Subject')}</td>
@@ -394,7 +399,7 @@ const views = {
       `;
 
       const totalPages = res.pagination?.totalPages || 1;
-      const total = res.pagination?.total || res.data.length;
+      const total = res.pagination?.total || rows.length;
       if (pagEl && totalPages > 1) {
         const prev = page > 1
           ? `<button type="button" class="btn" data-page="${page - 1}">&laquo; Previous</button>`
@@ -418,12 +423,16 @@ const views = {
       bindTicketRows();
     } catch (e) {
       console.error('Error loading tickets:', e);
-      document.getElementById('ticketsList').innerHTML = `
-        <div class="error-state">
-          <p class="error">Error loading tickets. Please try again.</p>
-          <button class="btn" onclick="views.tickets()">Retry</button>
-        </div>
-      `;
+      if (ticketsList) {
+        ticketsList.classList.remove('loading');
+        ticketsList.innerHTML = `
+          <div class="error-state">
+            <p class="error">Error loading tickets. Please try again.</p>
+            <button class="btn" type="button" id="retryTickets">Retry</button>
+          </div>
+        `;
+        document.getElementById('retryTickets')?.addEventListener('click', () => views.tickets());
+      }
     }
   },
 
@@ -803,14 +812,20 @@ async function handleLogin(e) {
       currentUser = body.user;
       window.APP_CONFIG = window.APP_CONFIG || {};
       window.APP_CONFIG.user = body.user;
-      // Staff use admin UI
+      // Staff use admin UI (full navigation — needs session cookie on same origin HTTP)
       if (body.user.type === 'staff') {
-        window.location.href = '/admin';
+        window.location.assign('/admin');
         return;
       }
       updateNav();
       initIdleDetection();
-      app.gotoState('tickets');
+      // Prefer tickets list after login; fall back to home if state machine rejects transition
+      try {
+        app.gotoState('tickets');
+      } catch (err) {
+        console.warn('gotoState tickets failed, using home', err);
+        app.gotoState('home');
+      }
       return;
     }
 
