@@ -1476,6 +1476,23 @@ module.exports = (conn, data) => {
     return listAttachments(ticketId);
   };
 
+  /**
+   * Lock helpers (osTicket-compatible; soft policy at HTTP layer).
+   */
+  const locks = require('../../lib/ticketLocks');
+
+  const getLockStatus = (ticketId, staffId = null) =>
+    locks.getLockStatus(conn, ticketId, staffId);
+
+  const acquireLock = (ticketId, staffId, opts) =>
+    locks.acquireLock(conn, ticketId, staffId, opts);
+
+  const releaseLock = (ticketId, staffId = null) =>
+    locks.releaseLock(conn, ticketId, staffId);
+
+  const softTouchLock = (ticketId, staffId) =>
+    locks.softTouchOnWrite(conn, ticketId, staffId);
+
   return {
     list,
     get,
@@ -1491,5 +1508,9 @@ module.exports = (conn, data) => {
     listAttachments,
     getAttachmentFile,
     addAttachments,
+    getLockStatus,
+    acquireLock,
+    releaseLock,
+    softTouchLock,
   };
 };

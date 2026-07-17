@@ -46,11 +46,44 @@ async function runTicketMonitor(conn) {
  * @param {Object} conn
  * @returns {Promise<{ tasks: Array, elapsedMs: number }>}
  */
+/**
+ * Cleanup expired ticket edit locks (stock Lock::cleanup).
+ * @param {Object} conn
+ */
+async function runLockCleanup(conn) {
+  try {
+    const { cleanupExpiredLocks } = require('./ticketLocks');
+    const result = await cleanupExpiredLocks(conn);
+    if (result.error) {
+      return {
+        name: 'LockCleanup',
+        status: 'error',
+        updated: 0,
+        message: result.error,
+      };
+    }
+    return {
+      name: 'LockCleanup',
+      status: 'ok',
+      updated: result.deleted || 0,
+      message: `Removed ${result.deleted || 0} expired lock(s)`,
+    };
+  } catch (err) {
+    return {
+      name: 'LockCleanup',
+      status: 'error',
+      updated: 0,
+      message: err.message,
+    };
+  }
+}
+
 async function runAllCronJobs(conn) {
   const started = Date.now();
   const tasks = [];
 
   tasks.push(await runTicketMonitor(conn));
+  tasks.push(await runLockCleanup(conn));
 
   // Placeholders — real implementations land with inbound mail / session store
   tasks.push({
@@ -72,5 +105,6 @@ async function runAllCronJobs(conn) {
 
 module.exports = {
   runTicketMonitor,
+  runLockCleanup,
   runAllCronJobs,
 };

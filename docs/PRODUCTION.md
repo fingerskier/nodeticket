@@ -39,6 +39,20 @@ npm install connect-redis redis
 - **Idle timeout** is enforced server-side on session auth and mirrored in the customer SPA.
 - **Multi-instance:** use Redis (or another shared store) via `SESSION_STORE=redis`; MemoryStore is process-local only.
 
+## Ticket locks (staff)
+
+Soft edit locks match stock tables (`ost_lock`, `ticket.lock_id`) and config keys (`ticket_lock`, `autolock_minutes`):
+
+| Mode (`ticket_lock`) | Behavior in Nodeticket |
+|----------------------|------------------------|
+| `0` | Disabled |
+| `1` | Stock “on view” — we still only touch locks on **staff write** (product choice: soft + on-first-edit) |
+| `2` (default) | On activity — acquire/renew on staff reply/note/assign/close/etc. |
+
+- Writes are **never hard-blocked**; if another agent holds the lock, the write succeeds and a warning is shown.
+- Cron job `LockCleanup` removes expired locks when `POST /api/tasks/cron` runs.
+- API: `GET/POST /api/v1/tickets/:id/lock`, `POST .../lock/release` (staff).
+
 ## Cron
 
 Stock osTicket expects an external scheduler to hit the official cron endpoint.

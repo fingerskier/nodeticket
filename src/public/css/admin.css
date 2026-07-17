@@ -617,6 +617,12 @@ a:hover {
   border: 1px solid #fcd34d;
 }
 
+.alert-info {
+  background: #eff6ff;
+  color: #1e40af;
+  border: 1px solid #bfdbfe;
+}
+
 /* Ticket ops (U1) */
 .ticket-detail-header {
   display: flex;

@@ -665,12 +665,35 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
     ]);
 
     let attachments = [];
+    let lockStatus = null;
     try {
       const { getSdk } = require('../lib/sdk');
       attachments = await getSdk().tickets.listAttachments(id);
+      lockStatus = await getSdk().tickets.getLockStatus(id, sessionUser.id);
     } catch {
       attachments = [];
     }
+
+    const lockBanner = (() => {
+      if (!lockStatus?.enabled) return '';
+      if (lockStatus.held_by_other && lockStatus.lock) {
+        const until = lockStatus.lock.expire
+          ? formatDate(lockStatus.lock.expire)
+          : '';
+        return `<div class="alert alert-warning" role="status">
+          <strong>Locked</strong> by ${escapeHtml(lockStatus.lock.staff_name)}
+          ${until ? ` until ${escapeHtml(until)}` : ''}.
+          You can still edit — this is a soft warning so agents know someone else is working this ticket.
+        </div>`;
+      }
+      if (lockStatus.held_by_self && lockStatus.lock) {
+        return `<div class="alert alert-info" role="status">
+          You hold the edit lock
+          ${lockStatus.lock.expire ? ` (expires ${escapeHtml(formatDate(lockStatus.lock.expire))})` : ''}.
+        </div>`;
+      }
+      return '';
+    })();
 
     const csrf = base.csrfToken || '';
     const staffOpts = staffRows.map((s) =>
@@ -689,7 +712,7 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
     const isClosed = ticket.status_state === 'closed';
 
     const content = `
-      ${flash}${warnFlash}${errFlash}
+      ${flash}${warnFlash}${errFlash}${lockBanner}
       <div class="ticket-detail">
         <div class="ticket-detail-header">
           <div>
@@ -959,6 +982,13 @@ router.post('/tickets/:id/reply', asyncHandler(async (req, res) => {
     const poster = user.name || user.username || 'Staff';
     const attachments = parseAttachmentsJson(req.body.attachments_json);
 
+    // Soft lock on first staff write (activity mode); never blocks
+    let lockWarn = null;
+    try {
+      const touch = await sdk.tickets.softTouchLock(id, user.id);
+      if (touch?.warning) lockWarn = touch.warning;
+    } catch { /* ignore lock errors */ }
+
     const entry = await sdk.tickets.reply(id, {
       staffId: user.id,
       body: message,
@@ -1006,6 +1036,9 @@ router.post('/tickets/:id/reply', asyncHandler(async (req, res) => {
       const reason = notification.reason ? `: ${notification.reason}` : '';
       return res.redirect(`/admin/tickets/${id}?warn=${encodeURIComponent(`Reply saved; email notification failed${reason}`)}`);
     }
+    if (lockWarn) {
+      return res.redirect(`/admin/tickets/${id}?warn=${encodeURIComponent(`Reply sent. ${lockWarn}`)}`);
+    }
     const suffix = attachments.length ? ` (${attachments.length} file${attachments.length === 1 ? '' : 's'})` : '';
     res.redirect(`/admin/tickets/${id}?msg=${encodeURIComponent(`Reply sent${suffix}`)}`);
   } catch (e) {
@@ -1026,6 +1059,10 @@ router.post('/tickets/:id/attachments', asyncHandler(async (req, res) => {
 
   try {
     const { getSdk } = require('../lib/sdk');
+    const user = req.session.user;
+    try {
+      await getSdk().tickets.softTouchLock(id, user.id);
+    } catch { /* soft */ }
     await getSdk().tickets.addAttachments(id, { attachments });
     res.redirect(`/admin/tickets/${id}?msg=${encodeURIComponent(`Uploaded ${attachments.length} file${attachments.length === 1 ? '' : 's'}`)}`);
   } catch (e) {
@@ -1033,6 +1070,19 @@ router.post('/tickets/:id/attachments', asyncHandler(async (req, res) => {
     res.redirect(`/admin/tickets/${id}?error=${encodeURIComponent(e.message || 'Upload failed')}`);
   }
 }));
+
+/**
+ * Soft lock helper for admin staff writes — returns warning string or null.
+ */
+async function adminSoftLock(ticketId, staffId) {
+  try {
+    const { getSdk } = require('../lib/sdk');
+    const touch = await getSdk().tickets.softTouchLock(ticketId, staffId);
+    return touch?.warning || null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Internal note
@@ -1046,12 +1096,16 @@ router.post('/tickets/:id/note', asyncHandler(async (req, res) => {
 
   try {
     const { getSdk } = require('../lib/sdk');
+    const lockWarn = await adminSoftLock(id, user.id);
     await getSdk().tickets.addNote(id, {
       staffId: user.id,
       title: title || null,
       body: note,
       poster: user.name || user.username || 'Staff',
     });
+    if (lockWarn) {
+      return res.redirect(`/admin/tickets/${id}?warn=${encodeURIComponent(`Note added. ${lockWarn}`)}`);
+    }
     res.redirect(`/admin/tickets/${id}?msg=${encodeURIComponent('Note added')}`);
   } catch (e) {
     console.error('Staff note failed:', e);
@@ -1071,6 +1125,7 @@ router.post('/tickets/:id/update', asyncHandler(async (req, res) => {
 
   try {
     const { getSdk } = require('../lib/sdk');
+    const lockWarn = await adminSoftLock(id, user.id);
     const changes = {};
     if (staff_id !== undefined) changes.staff_id = staff_id || 0;
     if (team_id !== undefined) changes.team_id = team_id || 0;
@@ -1079,6 +1134,9 @@ router.post('/tickets/:id/update', asyncHandler(async (req, res) => {
       staffId: user.id,
       username: user.name || user.username || '',
     });
+    if (lockWarn) {
+      return res.redirect(`/admin/tickets/${id}?warn=${encodeURIComponent(`Ticket updated. ${lockWarn}`)}`);
+    }
     res.redirect(`/admin/tickets/${id}?msg=${encodeURIComponent('Ticket updated')}`);
   } catch (e) {
     console.error('Ticket update failed:', e);
@@ -1091,6 +1149,7 @@ router.post('/tickets/:id/close', asyncHandler(async (req, res) => {
   const user = req.session.user;
   try {
     const { getSdk } = require('../lib/sdk');
+    await adminSoftLock(id, user.id);
     await getSdk().tickets.close(id, {
       staffId: user.id,
       username: user.name || user.username || '',
@@ -1106,6 +1165,7 @@ router.post('/tickets/:id/reopen', asyncHandler(async (req, res) => {
   const user = req.session.user;
   try {
     const { getSdk } = require('../lib/sdk');
+    await adminSoftLock(id, user.id);
     await getSdk().tickets.reopen(id, {
       staffId: user.id,
       username: user.name || user.username || '',
@@ -1918,6 +1978,11 @@ router.get('/settings', asyncHandler(async (req, res) => {
       } else if (def.type === 'fk') {
         const opts = (fkOptions[key] || []).map(o => `<option value="${o.value}" ${String(val) === String(o.value) ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('');
         formHtml += `<div class="form-group"><label>${escapeHtml(def.label)}</label><select name="${key}"><option value="">— None —</option>${opts}</select></div>`;
+      } else if (def.type === 'select') {
+        const opts = (def.options || []).map(o =>
+          `<option value="${escapeHtml(o.value)}" ${String(val) === String(o.value) ? 'selected' : ''}>${escapeHtml(o.label)}</option>`
+        ).join('');
+        formHtml += `<div class="form-group"><label>${escapeHtml(def.label)}</label><select name="${key}">${opts}</select></div>`;
       }
     }
   }

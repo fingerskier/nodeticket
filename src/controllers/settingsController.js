@@ -16,7 +16,17 @@ const SETTINGS_GROUPS = {
       default_sla_id: { type: 'fk', label: 'Default SLA Plan', table: 'sla', valueCol: 'id', labelCol: 'name' },
       default_priority_id: { type: 'fk', label: 'Default Priority', table: 'ticket_priority', valueCol: 'priority_id', labelCol: 'priority_desc' },
       default_template_id: { type: 'fk', label: 'Default Email Template', table: 'email_template_group', valueCol: 'tpl_id', labelCol: 'name' },
-      ticket_autolock: { type: 'toggle', label: 'Auto-lock Tickets' },
+      ticket_autolock: { type: 'toggle', label: 'Auto-lock Tickets (legacy toggle)' },
+      ticket_lock: {
+        type: 'select',
+        label: 'Ticket Lock Mode',
+        options: [
+          { value: '0', label: 'Disabled' },
+          { value: '1', label: 'On view (stock)' },
+          { value: '2', label: 'On activity / first edit (default)' },
+        ],
+      },
+      autolock_minutes: { type: 'number', label: 'Lock duration (minutes)' },
       auto_claim_tickets: { type: 'toggle', label: 'Auto-claim Tickets' },
     }
   },

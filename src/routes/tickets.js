@@ -98,6 +98,33 @@ router.post(
   asyncHandler(ticketController.addNote)
 );
 
+// GET /api/v1/tickets/:id/lock - Lock status
+router.get(
+  '/:id/lock',
+  authenticate,
+  requireStaff,
+  canAccessTicket,
+  asyncHandler(ticketController.getLock)
+);
+
+// POST /api/v1/tickets/:id/lock - Acquire/renew (soft; may return held-by warning)
+router.post(
+  '/:id/lock',
+  authenticate,
+  requireStaff,
+  canAccessTicket,
+  asyncHandler(ticketController.acquireTicketLock)
+);
+
+// POST /api/v1/tickets/:id/lock/release - Release own lock
+router.post(
+  '/:id/lock/release',
+  authenticate,
+  requireStaff,
+  canAccessTicket,
+  asyncHandler(ticketController.releaseTicketLock)
+);
+
 // POST /api/v1/tickets/:id/merge - Merge tickets (staff + permission)
 router.post(
   '/:id/merge',

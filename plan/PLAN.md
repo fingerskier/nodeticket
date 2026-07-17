@@ -535,7 +535,8 @@ Do **not** ship note UI before C-03 / A0.5 is green.
 
 - Plugins / hooks / webhooks (docs P5)  
 - 2FA, LDAP, OAuth  
-- Ticket locks, referrals  
+- Referrals  
+- Ticket locks **hard-block** mode (soft locks shipped)  
 - Windows `npm run` CLI flag stripping (root TODO)  
 - Full business-hours SLA engine edge cases  
 
@@ -712,6 +713,7 @@ This PLAN incorporates both: CODEX order, GROK product completeness after A4.
 | 2026-07-17 | **U2 fixture HTTP attaches:** create+reply with data-URL files → list → download bytes; unauth download 401; non-owner JWT 403. Suite is 14 tests (skip when fixture down). |
 | 2026-07-17 | **U3 customer portal hardening + ygdrassil pin:** CDN `ygdrassil@2026.7.13`. SPA: guest register/login CTAs, forgot-password links, profile nav, ticket search/filter/pagination, thread load-older (newest page first), create/reply drafts in sessionStorage, idle timeout aligned to server + full logout, skip-link / live errors / FAQ keyboard a11y. |
 | 2026-07-17 | **U4 admin FAQ + production readiness:** Admin FAQ list/search/create/edit/delete + categories; staff FAQ API lists drafts; errorHandler escapes HTML and hides internal messages in production; ygdrassil self-hosted under `public/vendor/ygdrassil` with CDN fallback; optional Redis session store; `docs/PRODUCTION.md`; README ops links; GitHub Actions unit CI. |
+| 2026-07-17 | **Soft ticket locks (stock semantics):** `lib/ticketLocks.js` — mode from `ticket_lock` (0/1/2) + `autolock_minutes`; acquire/renew/release on `lock` + `ticket.lock_id`; soft-touch on staff write paths (never blocks); admin banner; API `GET/POST .../lock` + release; cron `LockCleanup`; settings for mode/minutes. Policy: soft warn, on-first-edit (activity). Tests: `test/ticket.locks.test.js`. |
 
 ---
 

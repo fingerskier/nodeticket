@@ -230,28 +230,43 @@ const update = async (req, res) => {
   if (duedate !== undefined) changes.duedate = duedate;
   if (isoverdue !== undefined) changes.isoverdue = isoverdue;
 
-  // Named staff actions
+  // Named staff actions — soft-touch lock on first write
   if (action === 'close') {
+    const lockInfo = await staffSoftLock(req, id);
     const data = await getSdk().tickets.close(id, {
       staffId: req.auth.id,
       username: req.auth?.name || req.auth?.username || '',
     });
-    return res.json({ success: true, message: 'Ticket closed', data });
+    return res.json({ success: true, message: 'Ticket closed', data, lock: lockInfo });
   }
   if (action === 'reopen') {
+    const lockInfo = await staffSoftLock(req, id);
     const data = await getSdk().tickets.reopen(id, {
       staffId: req.auth.id,
       username: req.auth?.name || req.auth?.username || '',
     });
-    return res.json({ success: true, message: 'Ticket reopened', data });
+    return res.json({ success: true, message: 'Ticket reopened', data, lock: lockInfo });
   }
 
   const staffId = req.auth.id;
   const username = req.auth?.name || req.auth?.username || '';
+  const lockInfo = await staffSoftLock(req, id);
 
   const data = await getSdk().tickets.update(id, changes, { staffId, username });
-  res.json({ success: true, message: 'Ticket updated', data });
+  res.json({ success: true, message: 'Ticket updated', data, lock: lockInfo });
 };
+
+/**
+ * Soft lock touch on staff write (never blocks; may set warning).
+ */
+async function staffSoftLock(req, ticketId) {
+  if (req.auth?.type !== 'staff') return null;
+  try {
+    return await getSdk().tickets.softTouchLock(ticketId, req.auth.id);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Reply to ticket
@@ -262,6 +277,8 @@ const reply = async (req, res) => {
   const isStaff = req.auth?.type === 'staff';
   const poster = req.auth?.name || req.auth?.username || (isStaff ? 'Staff' : 'User');
   const sdk = getSdk();
+
+  const lockInfo = isStaff ? await staffSoftLock(req, id) : null;
 
   const data = await sdk.tickets.reply(id, {
     staffId: isStaff ? req.auth.id : null,
@@ -306,7 +323,13 @@ const reply = async (req, res) => {
     notification = { sent: false, reason: err.message };
   }
 
-  res.status(201).json({ success: true, message: 'Reply added', data, notification });
+  res.status(201).json({
+    success: true,
+    message: 'Reply added',
+    data,
+    notification,
+    lock: lockInfo,
+  });
 };
 
 /**
@@ -356,6 +379,8 @@ const addNote = async (req, res) => {
     throw ApiError.forbidden('Staff access required');
   }
 
+  const lockInfo = await staffSoftLock(req, id);
+
   const data = await getSdk().tickets.addNote(id, {
     staffId: req.auth.id,
     title,
@@ -363,7 +388,52 @@ const addNote = async (req, res) => {
     poster,
   });
 
-  res.status(201).json({ success: true, message: 'Note added', data });
+  res.status(201).json({ success: true, message: 'Note added', data, lock: lockInfo });
+};
+
+/**
+ * GET lock status for a ticket
+ */
+const getLock = async (req, res) => {
+  const staffId = req.auth?.type === 'staff' ? req.auth.id : null;
+  const data = await getSdk().tickets.getLockStatus(req.params.id, staffId);
+  res.json({ success: true, data });
+};
+
+/**
+ * POST acquire/renew lock (staff)
+ */
+const acquireTicketLock = async (req, res) => {
+  if (req.auth?.type !== 'staff') {
+    throw ApiError.forbidden('Staff access required');
+  }
+  const result = await getSdk().tickets.acquireLock(req.params.id, req.auth.id);
+  if (!result.ok && result.reason === 'held') {
+    return res.status(200).json({
+      success: true,
+      acquired: false,
+      warning: result.warning,
+      data: result.lock,
+    });
+  }
+  if (!result.ok) {
+    return res.json({ success: true, acquired: false, reason: result.reason, data: null });
+  }
+  res.json({ success: true, acquired: true, reason: result.reason, data: result.lock });
+};
+
+/**
+ * POST release lock (owner only)
+ */
+const releaseTicketLock = async (req, res) => {
+  if (req.auth?.type !== 'staff') {
+    throw ApiError.forbidden('Staff access required');
+  }
+  const result = await getSdk().tickets.releaseLock(req.params.id, req.auth.id);
+  if (!result.ok) {
+    return res.status(403).json({ success: false, message: 'You do not hold this lock' });
+  }
+  res.json({ success: true, released: result.released });
 };
 
 /**
@@ -826,4 +896,7 @@ module.exports = {
   createLegacyEmail,
   runLegacyCron,
   bulkAction,
+  getLock,
+  acquireTicketLock,
+  releaseTicketLock,
 };

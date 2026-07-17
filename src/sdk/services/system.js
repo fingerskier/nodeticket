@@ -25,7 +25,8 @@ module.exports = (conn, data) => {
         'helpdesk_url', 'helpdesk_title', 'default_dept_id',
         'default_sla_id', 'default_priority_id', 'default_template_id',
         'enable_kb', 'enable_captcha', 'max_file_size',
-        'allowed_filetypes', 'ticket_autolock', 'auto_claim_tickets'
+        'allowed_filetypes', 'ticket_autolock', 'auto_claim_tickets',
+        'ticket_lock', 'autolock_minutes'
       )
     `);
 
@@ -43,6 +44,8 @@ module.exports = (conn, data) => {
       max_file_size: parseInt(raw.max_file_size, 10) || 1048576,
       allowed_filetypes: raw.allowed_filetypes || '',
       auto_claim_tickets: raw.auto_claim_tickets === '1',
+      ticket_lock: parseInt(raw.ticket_lock, 10) || 2,
+      autolock_minutes: parseInt(raw.autolock_minutes, 10) || 3,
     };
   };
 
